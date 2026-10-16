@@ -250,12 +250,13 @@ INDEX_HTML = """<!doctype html>
   --avb-s:55%; --avb-l:52%; --avf-s:0%; --avf-l:100%;
 }
 /* 机器人头像的底色和头部颜色（色相按名字算，这里只定饱和度/亮度） */
-:root { --bot-bg-s:70%; --bot-bg-l:92%; --bot-head-s:62%; --bot-head-l:60%; }
-[data-theme="obsidian"] { --bot-bg-s:22%; --bot-bg-l:12%; --bot-head-s:42%; --bot-head-l:44%; }
+/* 用户小人：肤色、发色等；深色主题里头发调浅，免得和黑底糊在一起 */
+:root { --bot-head-s:62%; --bot-head-l:58%; --skin:#f7d5bb; --hair:#3f2b22; --eye-ink:#2b1d16; --mouth:#a2533f; }
+[data-theme="obsidian"] { --bot-head-s:48%; --bot-head-l:50%; --hair:#d6b08c; }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) { --bot-bg-s:22%; --bot-bg-l:12%; --bot-head-s:42%; --bot-head-l:44%; }
+  :root:not([data-theme]) { --bot-head-s:48%; --bot-head-l:50%; --hair:#d6b08c; }
 }
-[data-theme="dark"], [data-theme="kopi"], [data-theme="ocean"] { --bot-bg-s:30%; --bot-bg-l:18%; --bot-head-s:52%; --bot-head-l:52%; }
+[data-theme="dark"], [data-theme="kopi"], [data-theme="ocean"] { --bot-head-s:54%; --bot-head-l:54%; --hair:#d6b08c; }
 
 /* ---- 动效 ---- */
 @property --angle { syntax:"<angle>"; inherits:false; initial-value:0deg; }
@@ -267,8 +268,8 @@ INDEX_HTML = """<!doctype html>
 @keyframes chatter { from { transform:translateY(0); } to { transform:translateY(-1.2px); } }
 @keyframes zz { 0% { opacity:0; transform:translate(0, 4px) scale(.7); } 30% { opacity:1; } 100% { opacity:0; transform:translate(5px, -7px) scale(1.15); } }
 @keyframes bob { 0%, 100% { transform:translateY(0); } 50% { transform:translateY(-1.5px); } }
+@keyframes sway { 0%, 100% { transform:rotate(-10deg); } 50% { transform:rotate(12deg); } }
 @keyframes rise { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
-@keyframes ping { 0% { transform:scale(.7); opacity:.6; } 80%, 100% { transform:scale(1.9); opacity:0; } }
 @keyframes pop { from { opacity:0; transform:translateY(6px) scale(.98); } to { opacity:1; transform:none; } }
 
 * { box-sizing:border-box; }
@@ -318,14 +319,22 @@ details.offline > summary:hover { color:var(--ink-2); }
   display:grid; place-items:center; font-size:14px; font-weight:600;
   background:hsl(var(--h) var(--avb-s) var(--avb-l)); color:hsl(var(--h) var(--avf-s) var(--avf-l));
 }
-.avatar .st { position:absolute; right:-1px; bottom:-1px; width:11px; height:11px; border-radius:50%; background:var(--ok); border:2px solid var(--panel); }
-.avatar .st::after { content:""; position:absolute; inset:-2px; border-radius:50%; border:2px solid var(--ok); animation:ping 2.6s ease-out infinite; }
 .agent.off .avatar { filter:grayscale(1); opacity:.45; }
 
 /* ---- 机器人头像：在线 = 醒着（眨眼、东张西望、天线灯呼吸），离线 = 睡觉，发消息时张嘴说话 ---- */
-.bot { background:hsl(var(--h) var(--bot-bg-s) var(--bot-bg-l)); overflow:visible; }
-.bot svg { width:100%; height:100%; overflow:visible; transition:transform .3s cubic-bezier(.3, 1.6, .5, 1); }
-.agent:hover .bot svg { transform:rotate(-9deg) translateY(-1px); }
+.bot, .human { background:none; border-radius:0; overflow:visible; }
+.bot svg, .human svg { width:100%; height:100%; overflow:visible; transition:transform .3s cubic-bezier(.3, 1.6, .5, 1); }
+.agent:hover .bot svg, .agent:hover .human svg { transform:rotate(-9deg) translateY(-1px); }
+
+/* 用户小人：眨眼、呆毛摇摆、轻轻浮动 */
+.human .skin { fill:var(--skin); }
+.human .hair { fill:var(--hair); }
+.human .strand { fill:none; stroke:var(--hair); stroke-width:1.9; stroke-linecap:round; transform-box:fill-box; transform-origin:0% 100%; animation:sway 3.2s ease-in-out infinite; }
+.human .eyeh { fill:var(--eye-ink); }
+.human .lids { transform-box:fill-box; transform-origin:center; animation:blink 4.8s infinite; animation-delay:-1.3s; }
+.human .cheek { fill:rgba(255, 110, 120, .38); }
+.human .smile { fill:none; stroke:var(--mouth); stroke-width:1.4; stroke-linecap:round; }
+.human .face { animation:bob 4.2s ease-in-out infinite; }
 .bot .head { fill:hsl(var(--h) var(--bot-head-s) var(--bot-head-l)); }
 .bot .ear { fill:hsl(var(--h) var(--bot-head-s) calc(var(--bot-head-l) - 12%)); }
 .bot .stalk { stroke:hsl(var(--h) var(--bot-head-s) calc(var(--bot-head-l) - 12%)); stroke-width:1.8; stroke-linecap:round; }
@@ -603,7 +612,7 @@ function bot(name, online, still) {
   // 负的延迟 = 动画一开始就处在不同进度，几个机器人不会同时眨眼
   a.style.setProperty("--d", -((v >>> 8) % 50) / 10 + "s");
   a.style.setProperty("--d2", -((v >>> 16) % 90) / 10 + "s");
-  a.innerHTML = '<svg viewBox="-1 -1.5 42 38" aria-hidden="true"><g class="face">' + BOT.ant[ant] +
+  a.innerHTML = '<svg viewBox="1 -0.5 38 35" aria-hidden="true"><g class="face">' + BOT.ant[ant] +
     '<rect class="ear" x="3" y="18" width="3.5" height="8" rx="1.5"/><rect class="ear" x="33.5" y="18" width="3.5" height="8" rx="1.5"/>' +
     '<rect class="head" x="6" y="10" width="28" height="23" rx="8"/>' +
     '<rect class="visor" x="9.5" y="14.5" width="21" height="13" rx="5"/>' +
@@ -613,12 +622,21 @@ function bot(name, online, still) {
   return a;
 }
 
-function avatar(name, online, still) {
-  if (name !== "user") return bot(name, online, still);
-  const a = el("div", "avatar", "你");  // 用户是人，保留圆形头像
-  a.style.setProperty("--h", hue(name));
-  if (online) a.append(el("span", "st"));
+function human() {  // 用户是人：圆脸小人（呆毛、腮红、微笑），和机器人一眼就能分开
+  const a = el("div", "avatar human");
+  a.innerHTML = '<svg viewBox="1 -0.5 38 35" aria-hidden="true"><g class="face">' +
+    '<path class="strand" d="M20.5 7.6c-.5-2.6.8-4.6 3.3-5.2"/>' +
+    '<circle class="skin" cx="7.8" cy="20.6" r="2.2"/><circle class="skin" cx="32.2" cy="20.6" r="2.2"/>' +
+    '<circle class="skin" cx="20" cy="19.6" r="12.4"/>' +
+    '<path class="hair" d="M7.6 18.6C7.6 11.3 13 7.1 20 7.1s12.4 4.2 12.4 11.5c-1.6-2.4-4-4-7-4.6-1.8 1.7-5.6 2.9-9.6 2.9-2.9 0-5.4-.6-7-1.6-.5.6-.9 1.4-1.2 2.3z"/>' +
+    '<g class="lids"><ellipse class="eyeh" cx="15.6" cy="21" rx="1.5" ry="1.9"/><ellipse class="eyeh" cx="24.4" cy="21" rx="1.5" ry="1.9"/></g>' +
+    '<circle class="cheek" cx="12.8" cy="24.6" r="2.1"/><circle class="cheek" cx="27.2" cy="24.6" r="2.1"/>' +
+    '<path class="smile" d="M17.6 25.2c1.4 1.3 3.4 1.3 4.8 0"/></g></svg>';
   return a;
+}
+
+function avatar(name, online, still) {
+  return name === "user" ? human() : bot(name, online, still);
 }
 
 function logoMark(size) {
