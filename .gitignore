@@ -1,7 +1,40 @@
+# ---- Python 缓存/运行时 ----
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# ---- 虚拟环境 ----
 .venv/
+venv/
+
+# ---- uv 缓存（uv.lock 必须入库，不要忽略它）----
 .uv-cache/
+
+# ---- 构建产物 ----
+build/
+dist/
+*.egg-info/
+
+# ---- 本项目的工作残留：沙箱权限诊断报告、真实记录导出预览 ----
 .acl-recovery/
 .export-preview/
-__pycache__/
-*.pyc
-.pytest_cache/
+
+# ---- 规格说明不入库（对外文档是 README.md）----
+SPEC.md
+
+# ---- 环境变量/密钥 ----
+.env
+.env.*
+
+# ---- 编辑器 / 操作系统 ----
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+Desktop.ini
