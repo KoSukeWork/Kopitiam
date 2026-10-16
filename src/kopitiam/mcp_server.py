@@ -95,8 +95,9 @@ def start(kind: str, name: str | None = None) -> int:
         db.purge_stale()  # 顺手清理很久不用、又没有消息的旧身份；失败不影响启动
     except Exception:
         pass
-    agent_id = db.claim(kind=kind, cwd=os.getcwd(), name=name)
-    atexit.register(db.release, agent_id)
+    host = db.host_pid()  # agent 本身的进程：同一个 agent 开的多个 MCP 进程共用一个身份
+    agent_id = db.claim(kind=kind, cwd=os.getcwd(), name=name, pid=host)
+    atexit.register(db.release, agent_id, host)
     _ME = agent_id
     return agent_id
 

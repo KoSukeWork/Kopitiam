@@ -240,14 +240,67 @@ def _check_name(name: str) -> None:
         raise ValueError("错误：user 是网页保留身份，不能使用")
 
 
+_LAUNCHER_NAMES = {"kopitiam.exe", "kopitiam", "python.exe", "python", "pythonw.exe", "py.exe", "uv.exe", "uvx.exe"}
+
+
+def host_pid() -> int:
+    """这个 MCP 进程的「主人」：agent 本身的进程（claude.exe / codex.exe / node.exe…）。
+
+    agent 启动 kopitiam.exe，它再经过 python 启动器才到这里，所以要往上跳过这一串。
+    只跳过命令行里带 kopitiam 的 python，免得把用 Python 写的 agent 也跳过去。
+    """
+    try:
+        me = psutil.Process(os.getpid())
+        for p in me.parents():
+            name = p.name().lower()
+            if name in ("kopitiam.exe", "kopitiam"):
+                continue
+            if name in _LAUNCHER_NAMES:
+                try:
+                    if "kopitiam" in " ".join(p.cmdline()).lower():
+                        continue
+                except psutil.Error:
+                    pass
+            return p.pid
+    except psutil.Error:
+        pass
+    return os.getpid()
+
+
+def _same_host(row, pid: int) -> bool:
+    """这一行正被同一个 agent 进程占着（它又开了一个 MCP 进程）：共用这个身份，不另起 -2。"""
+    return row["pid"] == pid and is_online(row)
+
+
+def _usable(row, pid: int) -> bool:
+    # 团队里别人的身份（kind=remote）不能被本机 agent 认领，当作名字已占用
+    return row["kind"] != "remote" and (not is_online(row) or _same_host(row, pid))
+
+
+def _drop_spare_names(c, name: str, keep: int) -> None:
+    """认领到 name 以后，删掉离线、没有消息的 name-2、name-3……（以前多开时留下的空身份）。"""
+    counts = _message_counts(c)
+    for r in c.execute("SELECT * FROM agents WHERE name LIKE ? AND id <> ?", (name + "-%", keep)).fetchall():
+        # LIKE 里的 _ 是通配符，所以再精确核对一遍前缀
+        if not r["name"].lower().startswith(name.lower() + "-"):
+            continue
+        suffix = r["name"][len(name) + 1:]
+        if suffix.isdigit() and r["kind"] != "remote" and not counts.get(r["id"]) and not is_online(r):
+            c.execute("DELETE FROM agents WHERE id=?", (r["id"],))
+
+
 def claim(kind: str, cwd: str | None = None, *, name: str | None = None,
           pid: int | None = None, pid_ctime: float | None = None) -> int:
-    """认领身份，返回 agent id。cwd 默认当前进程目录（MCP 启动时的 os.getcwd()）。"""
+    """认领身份，返回 agent id。cwd 默认当前进程目录（MCP 启动时的 os.getcwd()）。
+
+    pid 默认是 agent 本身的进程（见 host_pid）：同一个 agent 开好几个 MCP 进程时（Codex 桌面版
+    会这样，dsh 也会先开一个探测进程）共用一个身份；agent 开着就算在线。
+    """
     if cwd is None:
         cwd = os.getcwd()
     cwd = str(cwd)
     if pid is None:
-        pid = os.getpid()
+        pid = host_pid()
     if pid_ctime is None:
         pid_ctime = _pid_ctime(pid)
     if name is not None:
@@ -258,24 +311,24 @@ def claim(kind: str, cwd: str | None = None, *, name: str | None = None,
         try:
             if name is not None:
                 row = c.execute("SELECT * FROM agents WHERE name = ?", (name,)).fetchone()
-                # 团队里别人的身份（kind=remote）不能被本机 agent 认领，当作名字已占用
-                if row is not None and row["kind"] != "remote" and not is_online(row):
+                if row is not None and _usable(row, pid):
                     # 认领这一行：写 pid、pid_ctime、last_seen，kind 也更新
                     c.execute(
                         "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, kind=? WHERE id=?",
                         (pid, pid_ctime, now_iso(), kind, row["id"]),
                     )
+                    _drop_spare_names(c, name, row["id"])
                     c.execute("COMMIT")
                     return int(row["id"])
                 if row is not None:
-                    # 名字被在线的进程占用：依次看 名字-2、名字-3……
+                    # 名字被别的 agent 占着：依次看 名字-2、名字-3……
                     # 已存在但离线的就认领（否则每次重启都会多出一行），都在线才新建
                     i = 2
                     while True:
                         alt = c.execute("SELECT * FROM agents WHERE name = ?", (f"{name}-{i}",)).fetchone()
                         if alt is None:
                             break
-                        if alt["kind"] != "remote" and not is_online(alt):
+                        if _usable(alt, pid):
                             c.execute(
                                 "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, kind=? WHERE id=?",
                                 (pid, pid_ctime, now_iso(), kind, alt["id"]),
@@ -289,12 +342,12 @@ def claim(kind: str, cwd: str | None = None, *, name: str | None = None,
                 c.execute("COMMIT")
                 return agent_id
 
-            # 没给 name：找 kind 相同、launch_cwd 相同、不在线的行，取 last_seen 最新的认领
+            # 没给 name：找 kind 相同、launch_cwd 相同、能用的行（离线，或正被同一个 agent 占着）
             candidates = c.execute(
                 "SELECT * FROM agents WHERE kind=? ORDER BY last_seen DESC", (kind,)
             ).fetchall()
-            for cand in candidates:
-                if norm(cand["launch_cwd"]) == norm(cwd) and not is_online(cand):
+            for cand in sorted(candidates, key=lambda r: not _same_host(r, pid)):  # 同一个 agent 的优先
+                if norm(cand["launch_cwd"]) == norm(cwd) and _usable(cand, pid):
                     c.execute(
                         "UPDATE agents SET pid=?, pid_ctime=?, last_seen=? WHERE id=?",
                         (pid, pid_ctime, now_iso(), cand["id"]),
@@ -317,11 +370,39 @@ def claim(kind: str, cwd: str | None = None, *, name: str | None = None,
             raise
 
 
-def release(agent_id: int) -> None:
-    """进程退出时把自己这一行的 pid 设为 NULL（atexit 调；崩溃的进程靠 is_online 判断）。"""
+def _other_mcp_alive(host: int) -> bool:
+    """同一个 agent 下面，除了我（和我的启动器）以外，还有没有别的 kopitiam MCP 进程。"""
     try:
+        me = psutil.Process(os.getpid())
+        mine = {me.pid} | {p.pid for p in me.parents()}
+        for ch in psutil.Process(host).children(recursive=True):
+            if ch.pid in mine:
+                continue
+            try:
+                cmd = " ".join(ch.cmdline()).lower()
+            except psutil.Error:
+                continue
+            if "kopitiam" in cmd and " mcp" in cmd:
+                return True
+    except psutil.Error:
+        pass
+    return False
+
+
+def release(agent_id: int, host: int | None = None) -> None:
+    """进程退出时把自己这一行标成离线（atexit 调；崩溃的进程靠 is_online 判断）。
+
+    给了 host（agent 本身的进程）时：同一个 agent 还有别的 MCP 进程在跑就不动；
+    并且只在这一行还归这个 agent 时才清（期间被别的 agent 认领了就不碰）。
+    """
+    try:
+        if host is not None and _other_mcp_alive(host):
+            return
         with _conn() as c:
-            c.execute("UPDATE agents SET pid=NULL, pid_ctime=NULL WHERE id=?", (agent_id,))
+            if host is None:
+                c.execute("UPDATE agents SET pid=NULL, pid_ctime=NULL WHERE id=?", (agent_id,))
+            else:
+                c.execute("UPDATE agents SET pid=NULL, pid_ctime=NULL WHERE id=? AND pid=?", (agent_id, host))
     except Exception:
         pass  # 退出清理尽力而为
 

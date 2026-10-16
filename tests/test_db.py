@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -149,3 +150,59 @@ def test_new_agent_does_not_receive_old_messages(home):
     assert chat.read(b) == "没有新消息。"
     # 但 history 能看到（历史可查，未读不推）
     assert "这是旧消息" in chat.history(b)
+
+
+# ---- 同一个 agent 开多个 MCP 进程（Codex 桌面版、dsh 的探测进程）共用一个身份 ----
+
+
+def test_same_host_shares_identity(home):
+    proj = str(home / "Proj")
+    a = db.claim("codex", cwd=proj, name="codex", pid=os.getpid())
+    b = db.claim("codex", cwd=proj, name="codex", pid=os.getpid())  # 同一个 agent 又开了一个 MCP
+    assert a == b
+    c1 = db.claim("claude", cwd=proj, pid=os.getpid())
+    c2 = db.claim("claude", cwd=proj, pid=os.getpid())
+    assert c1 == c2
+    with db._conn() as c:
+        names = [r[0] for r in c.execute("SELECT name FROM agents WHERE kind <> 'human' ORDER BY id")]
+    assert names == ["codex", "claude@Proj"]
+
+
+def test_release_keeps_identity_while_sibling_mcp_runs(home):
+    a = db.claim("codex", cwd=str(home), name="codex", pid=os.getpid())
+    # 模拟同一个 agent 下面另一个还在跑的 kopitiam MCP 进程
+    sib = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "kopitiam", "mcp"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(0.5)
+        db.release(a, host=os.getpid())
+        assert db.is_online(_row(os.getpid()))  # 兄弟进程还在，不标离线
+    finally:
+        sib.terminate()
+        sib.wait(10)
+    db.release(a, host=os.getpid())
+    assert _row(os.getpid()) is None  # 最后一个也退出了，才标离线
+
+
+def test_claiming_base_name_drops_spare_suffix_rows(home):
+    proj = str(home / "Proj")
+    a = db.claim("codex", cwd=proj, name="codex", pid=os.getpid())
+    b = db.claim("codex", cwd=proj, name="codex", pid=os.getppid())  # 另一个 agent → codex-2
+    lone = db.claim("pi", cwd=proj, name="myXbot-2", pid=os.getppid())
+    db.release(b)
+    db.release(lone)
+    db.release(a)
+    db.claim("codex", cwd=proj, name="codex", pid=os.getpid())
+    db.claim("pi", cwd=proj, name="my_bot", pid=os.getpid())  # _ 是 LIKE 通配符，不能误删 myXbot-2
+    with db._conn() as c:
+        names = {r[0] for r in c.execute("SELECT name FROM agents")}
+    assert "codex-2" not in names  # 离线、没消息的多余身份被清掉
+    assert "myXbot-2" in names
+
+
+def test_host_pid_is_a_live_ancestor():
+    import psutil
+
+    h = db.host_pid()
+    assert psutil.pid_exists(h)
+    assert h in {p.pid for p in psutil.Process(os.getpid()).parents()} | {os.getpid()}
