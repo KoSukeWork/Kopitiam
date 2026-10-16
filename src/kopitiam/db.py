@@ -7,10 +7,14 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
+import socket
 import sqlite3
+import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,6 +24,8 @@ import psutil
 from .config import (
     FILE_MAX,
     FILES_MAX,
+    FORWARD_EXTRA,
+    PEER_ONLINE_WINDOW,
     PURGE_AFTER,
     TEXT_MAX,
     WHO_WINDOW,
@@ -31,7 +37,7 @@ from .config import (
     valid_name,
 )
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"  # 2：加了团队（peers / outbox / messages.remote_uid）
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -58,7 +64,29 @@ CREATE TABLE IF NOT EXISTS attachments(
   path       TEXT NOT NULL,
   orig_name  TEXT NOT NULL,
   size       INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS peers(
+  id         INTEGER PRIMARY KEY,
+  node_id    TEXT NOT NULL UNIQUE,
+  name       TEXT NOT NULL,
+  address    TEXT NOT NULL,
+  secret     TEXT NOT NULL,
+  agent_id   INTEGER NOT NULL REFERENCES agents(id),
+  created_at TEXT NOT NULL,
+  last_ok    REAL);
+CREATE TABLE IF NOT EXISTS outbox(
+  id         INTEGER PRIMARY KEY,
+  message_id INTEGER NOT NULL REFERENCES messages(id),
+  peer_id    INTEGER NOT NULL REFERENCES peers(id),
+  status     TEXT NOT NULL DEFAULT 'pending',
+  tries      INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  next_try   REAL NOT NULL DEFAULT 0,
+  updated_at REAL NOT NULL);
 """
+# peers：配对过的别人的电脑。name = 对方自报的名字；address = 对方团队端口 host:port；
+#   secret = 配对时生成的共享密钥（HMAC 签名用）；agent_id = 本机为这个人建的身份（kind='remote'）。
+# outbox：发给远端的人的消息，后台线程负责投递；status = pending / sent。
+# messages.remote_uid：别人发来的消息的全局 id（「对方 node_id:对方消息 id」），用来去重。
 
 
 class _Fail(Exception):
@@ -95,8 +123,20 @@ def init_db() -> None:
         c.executescript(SCHEMA)
         c.execute("BEGIN IMMEDIATE")
         try:
-            if c.execute("SELECT 1 FROM meta WHERE key='schema_version'").fetchone() is None:
-                c.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,))
+            # v1 → v2：messages 加 remote_uid 列（几个进程可能同时启动，重复加列的错误忽略）
+            cols = {r[1] for r in c.execute("PRAGMA table_info(messages)")}
+            if "remote_uid" not in cols:
+                try:
+                    c.execute("ALTER TABLE messages ADD COLUMN remote_uid TEXT")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column" not in str(e):
+                        raise
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS messages_remote_uid ON messages(remote_uid)")
+            c.execute(
+                "INSERT INTO meta(key, value) VALUES('schema_version', ?)"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (SCHEMA_VERSION,),
+            )
             c.execute(
                 "INSERT OR IGNORE INTO agents(name, kind, cwd, launch_cwd, pid, pid_ctime,"
                 " last_read, created_at, last_seen) VALUES('user', 'human', ?, '', NULL, NULL, 0, ?, ?)",
@@ -106,6 +146,43 @@ def init_db() -> None:
             c.execute("ROLLBACK")
             raise
         c.execute("COMMIT")
+
+
+def get_meta(key: str, default: str | None = None) -> str | None:
+    with _conn() as c:
+        row = c.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_meta(key: str, value: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+
+
+def node_id() -> str:
+    """这台电脑的 kopitiam 的唯一 id（第一次用时生成，存在 meta 里）。"""
+    nid = get_meta("node_id")
+    if nid is None:
+        with _conn() as c:
+            c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('node_id', ?)", (uuid.uuid4().hex,))
+        nid = get_meta("node_id")
+    return nid
+
+
+def display_name() -> str:
+    """团队里别人看到的我的名字；默认 Windows 用户名。"""
+    return get_meta("display_name") or os.environ.get("USERNAME") or socket.gethostname() or "me"
+
+
+def set_display_name(name: str) -> str:
+    name = (name or "").strip()
+    if not valid_name(name) or name.lower() == "user":
+        return f"错误：名字不合法：{name}（1-32 个字符，字母/数字/下划线/中文/./@/-）"
+    set_meta("display_name", name)
+    return f"已设置：别人会看到你叫 {name}"
 
 
 def is_online(row) -> bool:
@@ -181,7 +258,8 @@ def claim(kind: str, cwd: str | None = None, *, name: str | None = None,
         try:
             if name is not None:
                 row = c.execute("SELECT * FROM agents WHERE name = ?", (name,)).fetchone()
-                if row is not None and not is_online(row):
+                # 团队里别人的身份（kind=remote）不能被本机 agent 认领，当作名字已占用
+                if row is not None and row["kind"] != "remote" and not is_online(row):
                     # 认领这一行：写 pid、pid_ctime、last_seen，kind 也更新
                     c.execute(
                         "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, kind=? WHERE id=?",
@@ -197,7 +275,7 @@ def claim(kind: str, cwd: str | None = None, *, name: str | None = None,
                         alt = c.execute("SELECT * FROM agents WHERE name = ?", (f"{name}-{i}",)).fetchone()
                         if alt is None:
                             break
-                        if not is_online(alt):
+                        if alt["kind"] != "remote" and not is_online(alt):
                             c.execute(
                                 "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, kind=? WHERE id=?",
                                 (pid, pid_ctime, now_iso(), kind, alt["id"]),
@@ -252,9 +330,20 @@ def _ago_cutoff(seconds: int) -> str:
     return (datetime.now() - timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 
-def _is_hidden(row, cutoff: str) -> bool:
-    """离线超过 WHO_WINDOW 的 agent：不在 who / 网页主列表里显示（用户永远显示）。"""
-    return row["kind"] != "human" and row["last_seen"] < cutoff and not is_online(row)
+def _is_hidden(row, cutoff: str, peer_agents: set[int] = frozenset()) -> bool:
+    """离线超过 WHO_WINDOW 的 agent：不在 who / 网页主列表里显示（用户永远显示）。
+
+    团队里的人（kind=remote）：还在配对就不隐藏；解除配对以后马上隐藏。
+    """
+    if row["kind"] == "human":
+        return False
+    if row["kind"] == "remote":
+        return row["id"] not in peer_agents
+    return row["last_seen"] < cutoff and not is_online(row)
+
+
+def _peer_agent_ids(c) -> set[int]:
+    return {r[0] for r in c.execute("SELECT agent_id FROM peers")}
 
 
 def _message_counts(c) -> dict[int, int]:
@@ -279,10 +368,12 @@ def purge_stale() -> int:
         c.execute("BEGIN IMMEDIATE")
         try:
             counts = _message_counts(c)
+            paired = _peer_agent_ids(c)  # 还在配对的同事不清理
             rows = c.execute(
                 "SELECT * FROM agents WHERE kind <> 'human' AND last_seen < ?", (cutoff,)
             ).fetchall()
-            gone = [r["id"] for r in rows if not counts.get(r["id"]) and not is_online(r)]
+            gone = [r["id"] for r in rows
+                    if not counts.get(r["id"]) and r["id"] not in paired and not is_online(r)]
             for i in gone:
                 c.execute("DELETE FROM agents WHERE id=?", (i,))
             c.execute("COMMIT")
@@ -290,6 +381,193 @@ def purge_stale() -> int:
             c.execute("ROLLBACK")
             raise
     return len(gone)
+
+
+# ---- 团队：配对过的别人的电脑（人和人之间互发消息，agent 不直接参与） ----
+# 远端的人在本机是一个 kind='remote' 的身份：cwd 存对方地址，launch_cwd 存对方 node_id
+# （解除配对后再配对，靠它找回原来的身份和历史消息）。
+
+def _alias_for(c, name: str) -> str:
+    """给远端的人在本机取一个不冲突的名字：用对方自报的名字，重名就加 -2、-3。"""
+    base = name if valid_name(name) and name.lower() != "user" else "peer"
+    nm, i = base, 2
+    while _name_taken(c, nm):
+        nm, i = f"{base}-{i}", i + 1
+    return nm
+
+
+def add_peer(peer_node: str, name: str, address: str, secret: str) -> dict:
+    """配对成功后保存对方；同一台电脑重新配对时只更新密钥/地址/名字，沿用原来的本机身份。"""
+    with _conn() as c:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            row = c.execute("SELECT * FROM peers WHERE node_id=?", (peer_node,)).fetchone()
+            if row is not None:
+                c.execute("UPDATE peers SET name=?, address=?, secret=?, last_ok=? WHERE id=?",
+                          (name, address, secret, time.time(), row["id"]))
+                agent_id = row["agent_id"]
+            else:
+                old = c.execute("SELECT id FROM agents WHERE kind='remote' AND launch_cwd=?",
+                                (peer_node,)).fetchone()
+                agent_id = old["id"] if old else _insert_agent(
+                    c, name=_alias_for(c, name), kind="remote", cwd=address,
+                    launch_cwd=peer_node, pid=None, pid_ctime=None)
+                c.execute(
+                    "INSERT INTO peers(node_id, name, address, secret, agent_id, created_at, last_ok)"
+                    " VALUES(?, ?, ?, ?, ?, ?, ?)",
+                    (peer_node, name, address, secret, agent_id, now_iso(), time.time()),
+                )
+            c.execute("UPDATE agents SET cwd=?, last_seen=? WHERE id=?", (address, now_iso(), agent_id))
+            alias = c.execute("SELECT name FROM agents WHERE id=?", (agent_id,)).fetchone()["name"]
+            c.execute("COMMIT")
+        except BaseException:
+            c.execute("ROLLBACK")
+            raise
+    return {"alias": alias, "agent_id": agent_id}
+
+
+_PEER_SELECT = "SELECT p.*, a.name AS alias FROM peers p JOIN agents a ON a.id = p.agent_id"
+
+
+def list_peers() -> list[sqlite3.Row]:
+    with _conn() as c:
+        return c.execute(_PEER_SELECT + " ORDER BY p.id").fetchall()
+
+
+def peer_by_node(peer_node: str):
+    with _conn() as c:
+        return c.execute(_PEER_SELECT + " WHERE p.node_id=?", (peer_node,)).fetchone()
+
+
+def peer_by_alias(alias: str):
+    with _conn() as c:
+        return c.execute(_PEER_SELECT + " WHERE a.name=?", (alias,)).fetchone()
+
+
+def peer_online(row) -> bool:
+    return (row["last_ok"] or 0) >= time.time() - PEER_ONLINE_WINDOW
+
+
+def peer_seen(peer_id: int, *, address: str | None = None, name: str | None = None) -> None:
+    """成功联系到对方：记下时间（和对方的新地址/新名字）；对方刚上线时，让排队的消息马上重发。"""
+    with _conn() as c:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            row = c.execute("SELECT * FROM peers WHERE id=?", (peer_id,)).fetchone()
+            if row is not None:
+                if not peer_online(row):
+                    c.execute("UPDATE outbox SET next_try=0 WHERE peer_id=? AND status='pending'", (peer_id,))
+                c.execute("UPDATE peers SET last_ok=?, address=COALESCE(?, address), name=COALESCE(?, name)"
+                          " WHERE id=?", (time.time(), address, name, peer_id))
+                c.execute("UPDATE agents SET last_seen=?, cwd=COALESCE(?, cwd) WHERE id=?",
+                          (now_iso(), address, row["agent_id"]))
+            c.execute("COMMIT")
+        except BaseException:
+            c.execute("ROLLBACK")
+            raise
+
+
+def remove_peer(peer_id: int) -> None:
+    """解除配对：删掉配对信息和还没送出的消息。本机身份保留（历史消息要显示名字），收进「已隐藏」。"""
+    with _conn() as c:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            c.execute("DELETE FROM outbox WHERE peer_id=?", (peer_id,))
+            c.execute("DELETE FROM peers WHERE id=?", (peer_id,))
+            c.execute("COMMIT")
+        except BaseException:
+            c.execute("ROLLBACK")
+            raise
+
+
+def due_outbox(limit: int = 20) -> list[dict]:
+    """到时间该投递（或重试）的发件箱条目，带上消息正文和附件。"""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT o.id AS ob_id, o.tries, o.message_id, p.id AS peer_id, p.address, p.secret, m.text"
+            " FROM outbox o JOIN peers p ON p.id = o.peer_id JOIN messages m ON m.id = o.message_id"
+            " WHERE o.status='pending' AND o.next_try <= ? ORDER BY o.id LIMIT ?",
+            (time.time(), limit),
+        ).fetchall()
+        out = []
+        for r in rows:
+            atts = c.execute("SELECT path, orig_name, size FROM attachments WHERE message_id=? ORDER BY id",
+                             (r["message_id"],)).fetchall()
+            out.append(dict(r) | {"files": [dict(a) for a in atts]})
+    return out
+
+
+def outbox_done(ob_id: int) -> None:
+    with _conn() as c:
+        c.execute("UPDATE outbox SET status='sent', last_error=NULL, updated_at=? WHERE id=?",
+                  (time.time(), ob_id))
+
+
+def outbox_retry(ob_id: int, tries: int, error: str) -> None:
+    """投递失败：记下原因，按 3s、6s、12s……最长 60s 的间隔重试。"""
+    wait = min(60, 3 * 2 ** min(tries, 5))
+    with _conn() as c:
+        c.execute("UPDATE outbox SET tries=tries+1, last_error=?, next_try=?, updated_at=? WHERE id=?",
+                  (error[:300], time.time() + wait, time.time(), ob_id))
+
+
+def receive_remote(peer_node: str, uid: str, text: str, files: list[tuple[Path, str]]) -> int | None:
+    """存一条别人发来的消息（只发给本机 user，agent 看不到）。uid 重复（对方重发）就忽略，返回 None。
+
+    files：已经在 staging 里校验过大小和哈希的 (临时文件, 原文件名)，成功后移进 FILES_DIR。
+    """
+    moved: list[Path] = []
+    with _conn() as c:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            peer = c.execute("SELECT * FROM peers WHERE node_id=?", (peer_node,)).fetchone()
+            if peer is None:
+                raise LookupError("unknown peer")
+            if c.execute("SELECT 1 FROM messages WHERE remote_uid=?", (uid,)).fetchone():
+                c.execute("ROLLBACK")
+                for tmp, _ in files:
+                    tmp.unlink(missing_ok=True)
+                return None
+            me = c.execute("SELECT id FROM agents WHERE name='user'").fetchone()["id"]
+            cur = c.execute(
+                "INSERT INTO messages(sender_id, to_ids, text, created_at, remote_uid) VALUES(?, ?, ?, ?, ?)",
+                (peer["agent_id"], json.dumps([me]), text, now_iso(), uid),
+            )
+            mid = int(cur.lastrowid)
+            files_dir().mkdir(parents=True, exist_ok=True)
+            for i, (tmp, name) in enumerate(files):
+                dest = files_dir() / f"remote_{mid:06d}_{i}_{safe(name)}"
+                shutil.move(tmp, dest)
+                moved.append(dest)
+                c.execute("INSERT INTO attachments(message_id, path, orig_name, size) VALUES(?, ?, ?, ?)",
+                          (mid, str(dest), name, dest.stat().st_size))
+            c.execute("UPDATE agents SET last_seen=? WHERE id=?", (now_iso(), peer["agent_id"]))
+            c.execute("COMMIT")
+        except BaseException:
+            c.execute("ROLLBACK")
+            for d in moved:
+                d.unlink(missing_ok=True)
+            raise
+    return mid
+
+
+def _delivery(c, where: str, params) -> dict[int, dict]:
+    """每条消息的投递状态：全部送达 = sent，否则 pending（带最近一次失败原因）。"""
+    out: dict[int, dict] = {}
+    for r in c.execute(f"SELECT message_id, status, last_error FROM outbox WHERE {where}", params):
+        d = out.setdefault(r["message_id"], {"state": "sent", "error": None})
+        if r["status"] != "sent":
+            d["state"] = "pending"
+            d["error"] = d["error"] or r["last_error"]
+    return out
+
+
+def file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def user_id() -> int:
@@ -392,8 +670,9 @@ class Chat:
         with _conn() as c:
             rows = c.execute("SELECT * FROM agents").fetchall()
         cutoff = _ago_cutoff(WHO_WINDOW)
-        # 在线的永远显示（哪怕很久没调用工具，last_seen 很旧）
-        shown = [r for r in rows if not _is_hidden(r, cutoff)]
+        # 在线的永远显示（哪怕很久没调用工具，last_seen 很旧）；团队里别人电脑上的人不列出：
+        # agent 不能直接发给他们，只能由用户在网页上转发
+        shown = [r for r in rows if r["kind"] != "remote" and not _is_hidden(r, cutoff)]
         shown.sort(key=lambda r: r["last_seen"], reverse=True)
         shown.sort(key=lambda r: 0 if (r["name"] == "user" or is_online(r)) else 1)
         if not shown:
@@ -415,7 +694,9 @@ class Chat:
     # ---- 6.3 send ----
 
     def send(self, me: int, text: str, to: list[str] | None = None,
-             files: list[str] | None = None) -> str:
+             files: list[str] | None = None, *, orig_names: list[str] | None = None,
+             text_max: int = TEXT_MAX) -> str:
+        """orig_names / text_max 只给 forward 用：保留附件原名、正文多留出「转发自…」那一行。"""
         with _conn() as c:
             c.execute("BEGIN IMMEDIATE")
             try:
@@ -425,25 +706,37 @@ class Chat:
                 # 1. 解析收件人；有一个名字不存在就整个失败
                 to = to or []
                 to_ids: list[int] = []
+                remote_peers: list[int] = []  # 收件人里别人电脑上的人 → 进发件箱，由网页进程投递
                 broadcast = any(t.strip().lower() == "all" or t.strip() == "所有人" for t in to)
                 if not broadcast:
                     for t in to:
                         t = t.strip()
                         if not t:
                             continue
-                        row = c.execute("SELECT id FROM agents WHERE name=?", (t,)).fetchone()
+                        row = c.execute("SELECT id, name, kind FROM agents WHERE name=?", (t,)).fetchone()
                         if row is None:
                             raise _Fail(
                                 f'错误：找不到 "{t}"。现有：{_all_names(c)}'
                             )
+                        if row["kind"] == "remote":
+                            # 只有用户本人能发给别的电脑上的人；agent 不能把内容直接发出去
+                            if me_row["kind"] != "human":
+                                raise _Fail(
+                                    f"错误：{row['name']} 在另一台电脑上，agent 不能直接发给他。"
+                                    "需要的话请用户在网页上转发。"
+                                )
+                            peer = c.execute("SELECT id FROM peers WHERE agent_id=?", (row["id"],)).fetchone()
+                            if peer is None:
+                                raise _Fail(f"错误：{row['name']} 已经解除配对，发不出去。")
+                            remote_peers.append(int(peer["id"]))
                         if row["id"] not in to_ids:
                             to_ids.append(int(row["id"]))
 
                 # 6. 正文长度（放在写库之前，任何失败都不能有半截数据）
                 text = text or ""
-                if len(text) > TEXT_MAX:
+                if len(text) > text_max:
                     raise _Fail(
-                        f"错误：消息太长（{len(text)} 字 > {TEXT_MAX}）。长内容请写成文件用 files 发送。"
+                        f"错误：消息太长（{len(text)} 字 > {text_max}）。长内容请写成文件用 files 发送。"
                     )
 
                 # 2. 附件校验：必须是已存在的文件、单个 ≤20MB、最多 10 个
@@ -487,7 +780,8 @@ class Chat:
                             dest = files_dir() / f"{msg_id:06d}_{i}_{safe(p.name)}"
                             shutil.copy2(p, dest)
                             copied.append(dest)
-                        atts.append((str(dest), p.name, size))
+                        orig = orig_names[i] if orig_names and i < len(orig_names) else p.name
+                        atts.append((str(dest), orig, size))
                 except OSError as e:
                     for tmp in copied:
                         try:
@@ -502,6 +796,9 @@ class Chat:
                         "INSERT INTO attachments(message_id, path, orig_name, size) VALUES(?, ?, ?, ?)",
                         (msg_id, path_s, orig, size),
                     )
+                for pid in remote_peers:
+                    c.execute("INSERT INTO outbox(message_id, peer_id, status, updated_at) VALUES(?, ?, 'pending', ?)",
+                              (msg_id, pid, time.time()))
                 names = {r["id"]: r["name"] for r in c.execute("SELECT id, name FROM agents")}
                 c.execute("COMMIT")
             except _Fail as e:
@@ -515,7 +812,35 @@ class Chat:
         out = f"已发送 #{msg_id} → {disp}"
         if atts:
             out += f"（附件 {len(atts)} 个）"
+        if remote_peers:
+            out += "（发往别的电脑的部分会在后台投递）"
         return out
+
+    # ---- 转发（网页用）：把一条消息转给别人，标明原发送者和来源 ----
+
+    def forward(self, me: int, msg_id: int, to: list[str]) -> str:
+        with _conn() as c:
+            m = c.execute(
+                "SELECT m.*, a.name AS sender, a.kind AS sender_kind FROM messages m"
+                " JOIN agents a ON a.id = m.sender_id WHERE m.id=?", (msg_id,)
+            ).fetchone()
+            atts = c.execute("SELECT path, orig_name FROM attachments WHERE message_id=? ORDER BY id",
+                             (msg_id,)).fetchall()
+        if m is None:
+            return f"错误：找不到消息 #{msg_id}"
+        if not [t for t in to if t.strip()]:
+            return "错误：请选择要转发给谁。"
+        where = "另一台电脑" if m["sender_kind"] == "remote" else "本机"
+        who = "用户" if m["sender_kind"] == "human" else m["sender"]
+        head = f"（转发自 {who} · {where} · {_fmt_time(m['created_at'])} · #{msg_id}）"
+        body = m["text"]
+        room = TEXT_MAX + FORWARD_EXTRA - len(head) - 1
+        if len(body) > room:
+            body = body[: room - 20] + "\n…（原文过长，已截断）"
+        files = [a["path"] for a in atts if Path(a["path"]).is_file()]
+        names = [a["orig_name"] for a in atts if Path(a["path"]).is_file()]
+        return self.send(me, head + "\n" + body if body else head, to, files,
+                         orig_names=names, text_max=TEXT_MAX + FORWARD_EXTRA)
 
     # ---- 6.4 read ----
 
@@ -676,9 +1001,14 @@ class Chat:
         cutoff = _ago_cutoff(WHO_WINDOW)
         with _conn() as c:
             rows = c.execute("SELECT * FROM agents ORDER BY id").fetchall()
+            peers = {r["agent_id"]: r for r in c.execute("SELECT * FROM peers")}
         out = []
         for r in rows:
-            online = r["kind"] == "human" or is_online(r)
+            peer = peers.get(r["id"])
+            if r["kind"] == "remote":
+                online = peer is not None and peer_online(peer)  # 最近 90 秒内联系上过
+            else:
+                online = r["kind"] == "human" or is_online(r)
             out.append({
                 "id": r["id"],
                 "name": r["name"],
@@ -686,7 +1016,8 @@ class Chat:
                 "cwd": r["cwd"],
                 "online": online,
                 "last_seen": r["last_seen"],
-                "hidden": not online and r["kind"] != "human" and r["last_seen"] < cutoff,
+                "hidden": not online and _is_hidden(r, cutoff, set(peers)),
+                "peer_name": peer["name"] if peer is not None else None,
             })
         return out
 
@@ -698,6 +1029,7 @@ class Chat:
                 "SELECT * FROM agents WHERE kind <> 'human' ORDER BY last_seen DESC"
             ).fetchall()
             counts = _message_counts(c)
+            paired = _peer_agent_ids(c)
         return [
             {
                 "name": r["name"],
@@ -707,7 +1039,7 @@ class Chat:
                 "ago": _ago(r["last_seen"]),
                 "messages": counts.get(r["id"], 0),
             }
-            for r in rows if _is_hidden(r, cutoff)
+            for r in rows if _is_hidden(r, cutoff, paired)
         ]
 
     def forget(self, name: str) -> str:
@@ -722,6 +1054,8 @@ class Chat:
                     raise _Fail("错误：不能删除用户身份")
                 if is_online(row):
                     raise _Fail(f"错误：{row['name']} 还在线，不能删除")
+                if c.execute("SELECT 1 FROM peers WHERE agent_id=?", (row["id"],)).fetchone():
+                    raise _Fail(f"错误：{row['name']} 还在团队里，请先解除配对")
                 n = _message_counts(c).get(row["id"], 0)
                 if n:
                     raise _Fail(f"错误：{row['name']} 有 {n} 条相关消息，只能隐藏、不能删除")
@@ -769,12 +1103,15 @@ class Chat:
         kinds = {r["id"]: r["kind"] for r in c.execute("SELECT id, kind FROM agents")}
         atts: dict[int, list[sqlite3.Row]] = {}
         ids = [m["id"] for m in rows]
+        delivery: dict[int, dict] = {}
         if ids:
             marks = ",".join("?" * len(ids))
             for r in c.execute(f"SELECT * FROM attachments WHERE message_id IN ({marks}) ORDER BY id", ids):
                 atts.setdefault(r["message_id"], []).append(r)
-        return [
-            {
+            delivery = _delivery(c, f"message_id IN ({marks})", ids)
+        out = []
+        for m in rows:
+            item = {
                 "id": m["id"],
                 "time": m["created_at"],
                 "sender": names.get(m["sender_id"], "?"),
@@ -786,8 +1123,17 @@ class Chat:
                     for a in atts.get(m["id"], [])
                 ],
             }
-            for m in rows
-        ]
+            if m["id"] in delivery:
+                item["delivery"] = delivery[m["id"]]
+            out.append(item)
+        return out
+
+    def delivery_updates(self) -> dict[str, dict]:
+        """发往别的电脑的消息里，还没送达的、和最近 10 分钟内状态变过的；网页用来刷新「已送达」。"""
+        with _conn() as c:
+            return {str(k): v for k, v in _delivery(
+                c, "message_id IN (SELECT message_id FROM outbox WHERE status='pending' OR updated_at > ?)",
+                [time.time() - 600]).items()}
 
     # ---- 格式化 ----
 

@@ -2,6 +2,7 @@
 
 安全：每个请求都查 Host；/api/* 要 X-Token；/files/* 接受 URL 参数 t；路径逃逸一律 404；
 不返回任何 Access-Control-Allow-* 头；消息渲染只用 textContent。
+团队（跨电脑）走另一个端口，见 peer.py；这里的 /api 和 /files 永远只给本机。
 """
 from __future__ import annotations
 
@@ -13,16 +14,28 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import db
-from .config import FILE_MAX, files_dir, safe
+from . import db, peer
+from .config import FILE_MAX, PEER_PORT, files_dir, safe
 from .db import Chat
 
 TEXT_SUFFIXES = {".md", ".txt", ".json", ".log"}
 SEND_BODY_MAX = 1024 * 1024
 
 
-def make_server(port: int = 8765) -> tuple[ThreadingHTTPServer, str, str]:
-    """起 HTTP 服务，返回 (server, token, url)。port=0 让系统随机分配（测试用）。"""
+class _WebServer(ThreadingHTTPServer):
+    peer_service: peer.PeerService
+
+    def server_close(self) -> None:  # 网页关掉时，团队端口和后台投递线程一起停
+        super().server_close()
+        self.peer_service.stop()
+
+
+def make_server(port: int = 8765, *, peer_host: str = "0.0.0.0", peer_port: int = PEER_PORT,
+                share: bool | None = None) -> tuple[ThreadingHTTPServer, str, str]:
+    """起 HTTP 服务，返回 (server, token, url)。port=0 让系统随机分配（测试用）。
+
+    share：None = 按上次在网页上的设置；True / False = 这次强制开 / 关团队连接。
+    """
     db.init_db()
     try:
         db.purge_stale()  # 启动时清理很久不用、又没有消息的旧身份
@@ -30,22 +43,36 @@ def make_server(port: int = 8765) -> tuple[ThreadingHTTPServer, str, str]:
         pass
     token = secrets.token_urlsafe(16)
     user = db.user_id()
+    service = peer.PeerService(peer_host, peer_port)
 
     class Handler(_Handler):
         pass
 
     Handler.token = token
     Handler.user_id_value = user
+    Handler.service = service
     try:
-        srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        srv = _WebServer(("127.0.0.1", port), Handler)
     except OSError as e:
-        raise SystemExit(f"错误：端口 {port} 被占用（{e}）。换一个端口：kopitiam web --port 8766")
-    return srv, token, f"http://127.0.0.1:{port}/?t={token}"
+        raise SystemExit(f"错误：端口 {port} 被占用（{e}）。换一个端口：kopitiam web --port 8770")
+    srv.peer_service = service
+    if share if share is not None else db.get_meta("share") == "1":
+        try:
+            service.start_sharing()
+        except peer.PeerError as e:
+            print(f"警告：{e}，团队连接没有打开")
+    service.start_worker()
+    return srv, token, f"http://127.0.0.1:{srv.server_address[1]}/?t={token}"
 
 
-def run(port: int = 8765, open_browser: bool = True) -> None:
-    srv, token, url = make_server(port)
+def run(port: int = 8765, open_browser: bool = True, *, peer_host: str = "0.0.0.0",
+        peer_port: int = PEER_PORT, share: bool | None = None) -> None:
+    srv, token, url = make_server(port, peer_host=peer_host, peer_port=peer_port, share=share)
     print(f"kopitiam web 已启动：{url}")  # 网页进程不是 MCP，可以往 stdout 打印
+    svc = srv.peer_service
+    if svc.sharing:
+        print(f"团队连接已开启：{svc.host}:{svc.bound_port}（别人用 {', '.join(peer.local_addresses()) or '本机 IP'}:{svc.bound_port} 连你）",
+              flush=True)
     if open_browser:
         webbrowser.open(url)
     try:
@@ -60,6 +87,7 @@ class _Handler(BaseHTTPRequestHandler):
     server_version = "kopitiam-web"
     token: str = ""
     user_id_value: int = 0
+    service: peer.PeerService
 
     def log_message(self, fmt, *args) -> None:  # 访问日志别刷屏
         pass
@@ -107,7 +135,12 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "bad after"}, 400)
             chat = Chat()
             msgs = self._with_urls(chat.messages_after(after, 200))
-            return self._json({"agents": chat.agents_brief(), "messages": msgs})
+            return self._json({"agents": chat.agents_brief(), "messages": msgs,
+                               "deliveries": chat.delivery_updates()})
+        if u.path == "/api/team":
+            if not self._token_header_ok():
+                return self._deny()
+            return self._json(self._team())
         if u.path == "/api/messages":
             if not self._token_header_ok():
                 return self._deny()
@@ -135,7 +168,85 @@ class _Handler(BaseHTTPRequestHandler):
             return self._api_upload(parse_qs(u.query))
         if u.path == "/api/forget":
             return self._api_forget()
+        if u.path in self._TEAM_POSTS:
+            data = self._read_json()
+            if data is None:
+                return
+            try:
+                return self._json({"ok": True} | (self._TEAM_POSTS[u.path](self, data) or {}))
+            except peer.PeerError as e:
+                return self._json({"ok": False, "message": f"错误：{e}"})
         return self._deny(404)
+
+    # ---- 团队 ----
+
+    def _read_json(self) -> dict | None:
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > SEND_BODY_MAX:
+            self._json({"ok": False, "error": "请求体太大"}, 413)
+            return None
+        try:
+            data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError):
+            self._json({"ok": False, "error": "bad json"}, 400)
+            return None
+        return data if isinstance(data, dict) else {}
+
+    def _team(self) -> dict:
+        svc = self.service
+        return {
+            "me": {"name": db.display_name()},
+            "share": {"on": svc.sharing, "port": svc.bound_port or svc.port, "host": svc.host,
+                      "addresses": peer.local_addresses()},
+            "code": svc.code_status(),
+            "peers": [{"alias": p["alias"], "name": p["name"], "address": p["address"], "online": db.peer_online(p)}
+                      for p in db.list_peers()],
+        }
+
+    def _t_share(self, data: dict) -> dict:
+        if data.get("on"):
+            self.service.start_sharing()
+        else:
+            self.service.stop_sharing()
+        return self._team()
+
+    def _t_code(self, data: dict) -> dict:
+        code, ttl = self.service.new_code()
+        return {"code": code, "expires_in": ttl}
+
+    def _t_join(self, data: dict) -> dict:
+        alias = self.service.join(str(data.get("address") or ""), str(data.get("code") or ""))
+        return {"message": f"已配对：{alias}", "alias": alias}
+
+    def _t_remove(self, data: dict) -> dict:
+        name = str(data.get("name") or "")
+        self.service.unpair(name)
+        return {"message": f"已解除配对：{name}"}
+
+    def _t_me(self, data: dict) -> dict:
+        out = db.set_display_name(str(data.get("name") or ""))
+        if out.startswith("错误："):
+            raise peer.PeerError(out[len("错误："):])
+        return {"message": out}
+
+    def _t_forward(self, data: dict) -> dict:
+        try:
+            mid = int(data.get("id"))
+        except (TypeError, ValueError):
+            raise peer.PeerError("消息 id 不对") from None
+        out = Chat().forward(self.user_id_value, mid, [str(t) for t in (data.get("to") or [])])
+        if out.startswith("错误："):
+            raise peer.PeerError(out[len("错误："):])
+        return {"message": out}
+
+    _TEAM_POSTS = {
+        "/api/team/share": _t_share,
+        "/api/team/code": _t_code,
+        "/api/team/join": _t_join,
+        "/api/team/remove": _t_remove,
+        "/api/team/me": _t_me,
+        "/api/forward": _t_forward,
+    }
 
     def _with_urls(self, msgs: list[dict]) -> list[dict]:
         for m in msgs:

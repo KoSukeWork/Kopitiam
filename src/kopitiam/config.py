@@ -17,6 +17,15 @@ FILES_MAX = 10                     # 单条消息附件个数上限
 WHO_WINDOW = 7 * 24 * 3600         # 离线超过 7 天：who 和网页主列表不再显示，网页收进「已隐藏」（秒）
 PURGE_AFTER = 30 * 24 * 3600       # 离线超过 30 天、且没有任何消息关联的身份：启动时自动删除（秒）
 
+# 团队（跨电脑，人和人之间互发消息）
+PEER_PORT = 8766                   # 团队端口默认值（只开 /peer/* 接口，本机网页仍只给 127.0.0.1）
+PEER_BODY_MAX = 64 * 1024          # /peer/message 等 JSON 请求体上限（字节）
+PAIR_CODE_TTL = 10 * 60            # 配对码有效期（秒）
+PAIR_MAX_TRIES = 5                 # 配对码最多试几次，超过就作废
+PEER_CLOCK_SKEW = 300              # 签名里的时间戳允许误差（秒），超出拒绝，防重放
+PEER_ONLINE_WINDOW = 90            # 最近一次成功联系在这个时间内，就算对方在线（秒）
+FORWARD_EXTRA = 400                # 转发时正文可以比 TEXT_MAX 多出的长度（放「转发自…」那一行）
+
 # 名字规则：1-32 个字符，\w（含中文）、点、@、横线；不分大小写唯一。
 NAME_RE = re.compile(r"^[\w.@\-]{1,32}$")
 RESERVED_NAMES = frozenset({"all", "所有人"})
@@ -43,6 +52,11 @@ def files_dir() -> Path:
 
 def db_path() -> Path:
     return data_dir() / DB_NAME
+
+
+def staging_dir() -> Path:
+    """别人发来的附件先落在这里，整条消息收齐、校验通过后再移进 FILES_DIR。"""
+    return data_dir() / "peer-staging"
 
 
 def norm(p: str | os.PathLike) -> str:
