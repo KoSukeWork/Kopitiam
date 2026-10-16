@@ -185,17 +185,48 @@ INDEX_HTML = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>kopitiam</title>
+<script>
+  // 尽早套用上次选的主题，避免页面先闪一下默认配色（读不到就跟随系统）
+  try { const t = localStorage.getItem("kopitiam-theme"); if (t && t !== "auto") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <style>
-:root {
-  color-scheme: light dark;
+/* 主题：不设 data-theme = 跟随系统；其余主题各自一套颜色 */
+:root, [data-theme="light"] {
+  color-scheme: light;
   --bg:#f3f4f6; --panel:#ffffff; --hover:#f2f3f5; --ink:#1d2129; --ink-2:#4e5969; --muted:#86909c; --line:#e5e6eb;
-  --accent:#3370ff; --accent-soft:rgba(51,112,255,.10); --ok:#00b42a; --name-l:40%; --shadow:0 1px 2px rgba(15,23,42,.06);
+  --accent:#3370ff; --accent-ink:#ffffff; --accent-soft:rgba(51,112,255,.10); --ok:#00b42a; --name-l:40%; --shadow:0 1px 2px rgba(15,23,42,.06);
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
+    color-scheme: dark;
     --bg:#0f1115; --panel:#171a1f; --hover:#1f232a; --ink:#e6e8eb; --ink-2:#b4bac3; --muted:#7d8590; --line:#272b32;
-    --accent:#5b8dff; --accent-soft:rgba(91,141,255,.16); --ok:#3ccf62; --name-l:70%; --shadow:none;
+    --accent:#5b8dff; --accent-ink:#ffffff; --accent-soft:rgba(91,141,255,.16); --ok:#3ccf62; --name-l:70%; --shadow:none;
   }
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:#0f1115; --panel:#171a1f; --hover:#1f232a; --ink:#e6e8eb; --ink-2:#b4bac3; --muted:#7d8590; --line:#272b32;
+  --accent:#5b8dff; --accent-ink:#ffffff; --accent-soft:rgba(91,141,255,.16); --ok:#3ccf62; --name-l:70%; --shadow:none;
+}
+[data-theme="latte"] {  /* 拿铁：奶油底 + 焦糖色 */
+  color-scheme: light;
+  --bg:#f5ede3; --panel:#fffaf4; --hover:#f0e5d7; --ink:#3b2a1f; --ink-2:#6b5444; --muted:#9c8573; --line:#e7d9c8;
+  --accent:#a8612a; --accent-ink:#ffffff; --accent-soft:rgba(168,97,42,.12); --ok:#4f8a3c; --name-l:36%; --shadow:0 1px 2px rgba(80,50,20,.08);
+}
+[data-theme="kopi"] {  /* 咖啡：深棕底 + 琥珀色 */
+  color-scheme: dark;
+  --bg:#17110e; --panel:#211915; --hover:#2c221d; --ink:#f2e7dc; --ink-2:#cfbba9; --muted:#9a8574; --line:#382d27;
+  --accent:#d99a55; --accent-ink:#2b1a0b; --accent-soft:rgba(217,154,85,.16); --ok:#86c46a; --name-l:72%; --shadow:none;
+}
+[data-theme="ocean"] {  /* 深海：深蓝底 + 青绿色 */
+  color-scheme: dark;
+  --bg:#0b1220; --panel:#111a2c; --hover:#18233a; --ink:#e3eaf7; --ink-2:#b2c0da; --muted:#7b8aa8; --line:#223049;
+  --accent:#3cc8bd; --accent-ink:#04201d; --accent-soft:rgba(60,200,189,.15); --ok:#4ade80; --name-l:72%; --shadow:none;
+}
+[data-theme="sakura"] {  /* 樱花：浅粉底 + 玫红色 */
+  color-scheme: light;
+  --bg:#fbf1f4; --panel:#ffffff; --hover:#f8e6ec; --ink:#3a2530; --ink-2:#6d4e5c; --muted:#a08592; --line:#f0d9e2;
+  --accent:#d9466f; --accent-ink:#ffffff; --accent-soft:rgba(217,70,111,.10); --ok:#3fa564; --name-l:40%; --shadow:0 1px 2px rgba(120,40,70,.07);
 }
 * { box-sizing:border-box; }
 [hidden] { display:none !important; }
@@ -216,6 +247,12 @@ aside { width:280px; flex-shrink:0; display:flex; flex-direction:column; backgro
 .brand .logo { font-size:17px; font-weight:700; letter-spacing:.2px; }
 .brand .sub { font-size:12px; color:var(--muted); margin-top:2px; }
 #agents { flex:1; overflow-y:auto; padding:2px 10px 16px; }
+.themes { flex-shrink:0; display:flex; align-items:center; gap:10px; padding:12px 20px 14px; border-top:1px solid var(--line); }
+.themes .lbl { font-size:12px; color:var(--muted); }
+#swatches { display:flex; flex-wrap:wrap; gap:8px; }
+.swatch { width:22px; height:22px; padding:0; border-radius:50%; border:2px solid var(--panel); box-shadow:0 0 0 1px var(--line); cursor:pointer; transition:transform .12s; }
+.swatch:hover { transform:scale(1.12); }
+.swatch.on { box-shadow:0 0 0 2px var(--accent); }
 .section { display:flex; align-items:center; gap:6px; padding:14px 10px 6px; font-size:12px; font-weight:600; color:var(--muted); letter-spacing:.3px; }
 details.offline > summary { list-style:none; cursor:pointer; user-select:none; }
 details.offline > summary::-webkit-details-marker { display:none; }
@@ -275,7 +312,7 @@ main { flex:1; min-width:0; display:flex; flex-direction:column; }
 .msg.mine { flex-direction:row-reverse; }
 .msg.mine .body { align-items:flex-end; }
 .msg.mine .meta { justify-content:flex-end; }
-.msg.mine .bubble { background:var(--accent); color:#fff; border-color:transparent; border-radius:14px 4px 14px 14px; }
+.msg.mine .bubble { background:var(--accent); color:var(--accent-ink); border-color:transparent; border-radius:14px 4px 14px 14px; }
 .notice { margin:2px 0 18px; text-align:center; }
 .notice span { padding:3px 12px; border-radius:999px; font-size:12px; color:var(--muted); background:var(--hover); }
 .files { display:flex; flex-direction:column; gap:6px; margin-top:6px; max-width:100%; }
@@ -298,7 +335,7 @@ main { flex:1; min-width:0; display:flex; flex-direction:column; }
 .tools { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:4px 10px 10px; }
 .spacer { flex:1; }
 .hint { font-size:12px; color:var(--muted); }
-.primary { padding:6px 18px; border:0; border-radius:8px; background:var(--accent); color:#fff; font-weight:600; cursor:pointer; }
+.primary { padding:6px 18px; border:0; border-radius:8px; background:var(--accent); color:var(--accent-ink); font-weight:600; cursor:pointer; }
 .primary:hover { filter:brightness(1.08); }
 #chiprow { display:flex; flex-wrap:wrap; gap:6px; }
 .chip { display:inline-flex; align-items:center; gap:2px; padding:2px 4px 2px 10px; border:1px solid var(--line); border-radius:999px; background:var(--hover); font-size:12px; }
@@ -324,6 +361,7 @@ main { flex:1; min-width:0; display:flex; flex-direction:column; }
 <aside id="side">
   <div class="brand"><div class="logo">☕ kopitiam</div><div class="sub" id="brandsub">本地聊天室</div></div>
   <div id="agents"></div>
+  <div class="themes"><span class="lbl">主题</span><div id="swatches"></div></div>
 </aside>
 <div id="backdrop"></div>
 <main>
@@ -580,6 +618,40 @@ async function upload(files) {
   renderChips();
 }
 
+// ---- 主题：选择只存在这个浏览器里（localStorage 不可用时就不记，照样能切换） ----
+const THEMES = [
+  { id: "auto",   name: "跟随系统", a: "#f3f4f6", b: "#171a1f" },
+  { id: "light",  name: "浅色",     a: "#f3f4f6", b: "#3370ff" },
+  { id: "dark",   name: "深色",     a: "#0f1115", b: "#5b8dff" },
+  { id: "latte",  name: "拿铁",     a: "#f5ede3", b: "#a8612a" },
+  { id: "kopi",   name: "咖啡",     a: "#17110e", b: "#d99a55" },
+  { id: "ocean",  name: "深海",     a: "#0b1220", b: "#3cc8bd" },
+  { id: "sakura", name: "樱花",     a: "#fbf1f4", b: "#d9466f" },
+];
+
+function currentTheme() { return document.documentElement.dataset.theme || "auto"; }
+
+function setTheme(id) {
+  if (id === "auto") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = id;
+  try { localStorage.setItem("kopitiam-theme", id); } catch (e) {}
+  renderSwatches();
+}
+
+function renderSwatches() {
+  const box = $("swatches");
+  box.textContent = "";
+  for (const t of THEMES) {
+    const b = el("button", "swatch" + (t.id === currentTheme() ? " on" : ""));
+    b.style.background = "linear-gradient(135deg, " + t.a + " 50%, " + t.b + " 50%)";
+    b.title = t.name;
+    b.setAttribute("aria-label", "主题：" + t.name);
+    b.onclick = () => setTheme(t.id);
+    box.append(b);
+  }
+}
+
+renderSwatches();
 $("send").onclick = send;
 $("showAll").onclick = () => select(null);
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.ctrlKey) send(); });
