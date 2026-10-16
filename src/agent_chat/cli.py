@@ -36,7 +36,8 @@ def main(argv: list[str] | None = None) -> int:
         from .mcp_server import run
         run(args.kind, args.name)
     if args.cmd == "web":
-        raise SystemExit("尚未实现：web（里程碑 6）")
+        from .web import run
+        run(args.port, open_browser=not args.no_open)
     if args.cmd == "export":
         return _run_export(args)
     return 0
