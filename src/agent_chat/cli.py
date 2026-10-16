@@ -33,7 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.cmd == "mcp":
-        raise SystemExit("尚未实现：mcp（里程碑 3）")
+        from .mcp_server import run
+        run(args.kind, args.name)
     if args.cmd == "web":
         raise SystemExit("尚未实现：web（里程碑 6）")
     if args.cmd == "export":

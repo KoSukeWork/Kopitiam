@@ -43,7 +43,8 @@ def test_direct_message_visibility(home, chat, agents):
 
 def test_broadcast(home, chat, agents):
     a, b, c = agents
-    chat.send(a, "大家好")
+    out = chat.send(a, "大家好")
+    assert out.startswith("已发送 #1 → 所有人")  # to 为空 = 广播
     for who in (b, c):
         assert "大家好" in chat.read(who)
     # 广播大家都能读到；但 read 不返回自己发的

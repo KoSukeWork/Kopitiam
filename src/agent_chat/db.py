@@ -454,7 +454,7 @@ class Chat:
                 c.execute("ROLLBACK")
                 raise
 
-        disp = "所有人" if broadcast else "、".join(names[i] for i in to_ids)
+        disp = "所有人" if (broadcast or not to_ids) else "、".join(names[i] for i in to_ids)
         out = f"已发送 #{msg_id} → {disp}"
         if atts:
             out += f"（附件 {len(atts)} 个）"
