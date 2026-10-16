@@ -71,8 +71,8 @@ def run(port: int = 8765, open_browser: bool = True, *, peer_host: str = "0.0.0.
     print(f"kopitiam web 已启动：{url}")  # 网页进程不是 MCP，可以往 stdout 打印
     svc = srv.peer_service
     if svc.sharing:
-        print(f"团队连接已开启：{svc.host}:{svc.bound_port}（别人用 {', '.join(peer.local_addresses()) or '本机 IP'}:{svc.bound_port} 连你）",
-              flush=True)
+        addrs = ", ".join(f"{ip}:{svc.bound_port}" for ip in peer.local_addresses()) or f"本机IP:{svc.bound_port}"
+        print(f"团队连接已开启：{svc.host}:{svc.bound_port}（同事用 {addrs} 连你）", flush=True)
     if open_browser:
         webbrowser.open(url)
     try:
@@ -391,12 +391,12 @@ INDEX_HTML = """<!doctype html>
 }
 /* 机器人头像的底色和头部颜色（色相按名字算，这里只定饱和度/亮度） */
 /* 用户小人：肤色、发色等；深色主题里头发调浅，免得和黑底糊在一起 */
-:root { --bot-head-s:62%; --bot-head-l:58%; --skin:#f7d5bb; --hair:#3f2b22; --eye-ink:#2b1d16; --mouth:#a2533f; }
-[data-theme="obsidian"] { --bot-head-s:48%; --bot-head-l:50%; --hair:#d6b08c; }
+:root { --bot-head-s:62%; --bot-head-l:58%; --skin:#f7d5bb; --hair:#3f2b22; --hair-l:32%; --eye-ink:#2b1d16; --mouth:#a2533f; }
+[data-theme="obsidian"] { --bot-head-s:48%; --bot-head-l:50%; --hair:#d6b08c; --hair-l:66%; }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) { --bot-head-s:48%; --bot-head-l:50%; --hair:#d6b08c; }
+  :root:not([data-theme]) { --bot-head-s:48%; --bot-head-l:50%; --hair:#d6b08c; --hair-l:66%; }
 }
-[data-theme="dark"], [data-theme="kopi"], [data-theme="ocean"] { --bot-head-s:54%; --bot-head-l:54%; --hair:#d6b08c; }
+[data-theme="dark"], [data-theme="kopi"], [data-theme="ocean"] { --bot-head-s:54%; --bot-head-l:54%; --hair:#d6b08c; --hair-l:66%; }
 
 /* ---- 动效 ---- */
 @property --angle { syntax:"<angle>"; inherits:false; initial-value:0deg; }
@@ -469,6 +469,8 @@ details.offline > summary:hover { color:var(--ink-2); }
 /* 用户小人：眨眼、呆毛摇摆、轻轻浮动 */
 .human .skin { fill:var(--skin); }
 .human .hair { fill:var(--hair); }
+.human.peer .hair { fill:hsl(var(--hh) 42% var(--hair-l)); }  /* 同事：发色按名字变 */
+.human.peer .strand { stroke:hsl(var(--hh) 42% var(--hair-l)); }
 .human .strand { fill:none; stroke:var(--hair); stroke-width:1.9; stroke-linecap:round; transform-box:fill-box; transform-origin:0% 100%; animation:sway 3.2s ease-in-out infinite; }
 .human .eyeh { fill:var(--eye-ink); }
 .human .lids { transform-box:fill-box; transform-origin:center; animation:blink 4.8s infinite; animation-delay:-1.3s; }
@@ -566,6 +568,60 @@ main.page > #convbar, main.page > #stream, main.page > #composer { display:none;
 .hidden-link { width:100%; display:flex; align-items:center; gap:8px; margin-top:10px; padding:9px 10px; border:0; border-top:1px solid var(--line); background:transparent; color:var(--muted); font-size:12px; font-weight:600; letter-spacing:.3px; cursor:pointer; }
 .hidden-link:hover { color:var(--ink-2); }
 .hidden-link .grow { flex:1; text-align:left; }
+
+/* ---- 团队 ---- */
+.team-head .grow { flex:1; }
+.mini { display:grid; place-items:center; width:22px; height:22px; padding:0; border:1px solid var(--line); border-radius:7px; background:transparent; color:var(--muted); cursor:pointer; }
+.mini:hover { color:var(--accent); border-color:var(--accent); }
+.team-hint { width:100%; display:flex; align-items:center; gap:8px; margin:2px 0; padding:9px 10px; border:1px dashed var(--line); border-radius:12px; background:transparent; color:var(--muted); font-size:12.5px; cursor:pointer; }
+.team-hint:hover { color:var(--ink-2); border-color:var(--muted); }
+.meta .fwdbtn { display:inline-grid; place-items:center; width:22px; height:22px; padding:0; border:0; border-radius:6px; background:transparent; color:var(--muted); cursor:pointer; opacity:0; transition:opacity .15s; }
+.msg:hover .fwdbtn, .meta .fwdbtn:focus-visible { opacity:1; }
+.meta .fwdbtn:hover { color:var(--accent); background:var(--hover); }
+@media (hover:none) { .meta .fwdbtn { opacity:1; } }
+.dstate { display:flex; align-items:center; gap:4px; margin-top:4px; font-size:11.5px; color:var(--muted); }
+.dstate.sent { color:var(--ok); }
+
+/* ---- 弹窗 ---- */
+@keyframes fade { from { opacity:0; } to { opacity:1; } }
+#modal { position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:16px; background:rgba(0,0,0,.45); animation:fade .15s ease-out; }
+.mcard { width:min(540px, 100%); max-height:min(88vh, 780px); overflow-y:auto; border:1px solid var(--line); border-radius:18px; background:var(--panel); box-shadow:0 24px 64px rgba(0,0,0,.35); animation:pop .18s ease-out; }
+.mhead { position:sticky; top:0; z-index:1; display:flex; align-items:center; justify-content:space-between; padding:12px 14px 10px 20px; border-bottom:1px solid var(--line); background:var(--panel); font-size:15px; font-weight:600; }
+#mbody { padding:4px 20px 18px; }
+.tsec { padding:14px 0; border-bottom:1px solid var(--line); }
+.tsec:last-child { border-bottom:0; }
+.tsec h3 { margin:0 0 2px; font-size:13px; font-weight:600; }
+.tsub { margin-bottom:10px; font-size:12px; color:var(--muted); }
+.trow { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.trow .grow { flex:1; }
+.tin { flex:1; min-width:120px; padding:7px 12px; border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--ink); outline:0; }
+.tin:focus { border-color:var(--accent); }
+.code-in { flex:0 0 120px; min-width:0; letter-spacing:2px; }
+.code { padding:8px 16px; border-radius:12px; background:var(--hover); font:600 28px/1.2 "Cascadia Mono", Consolas, ui-monospace, monospace; letter-spacing:7px; user-select:all; }
+.addr { padding:4px 0 6px; font:600 15px "Cascadia Mono", Consolas, ui-monospace, monospace; color:var(--ink); user-select:all; word-break:break-all; }
+.addr + .mnote { margin-bottom:10px; }
+.mlabel { margin-top:10px; font-size:12px; color:var(--muted); }
+.mnote { font-size:12px; line-height:1.65; color:var(--muted); }
+.mok { margin-top:8px; font-size:12px; color:var(--ok); }
+.merr { margin-top:8px; font-size:12px; color:#e5484d; }
+.switch { position:relative; flex-shrink:0; width:40px; height:22px; padding:0; border:0; border-radius:999px; background:var(--line); cursor:pointer; transition:background-color .2s; }
+.switch::after { content:""; position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.3); transition:transform .2s; }
+.switch.on { background:var(--ok); }
+.switch.on::after { transform:translateX(18px); }
+.prow { display:flex; align-items:center; gap:10px; padding:8px 0; }
+.prow .avatar { width:32px; height:32px; }
+.prow .info { flex:1; min-width:0; }
+.prow .name { font-weight:600; }
+.prow .cwd { font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fwd-preview { margin:8px 0 4px; padding:10px 12px; border-left:3px solid var(--line); border-radius:6px; background:var(--hover); font-size:13px; color:var(--ink-2); white-space:pre-wrap; word-break:break-word; }
+.pick { display:flex; flex-direction:column; gap:2px; max-height:300px; overflow-y:auto; margin:10px 0; }
+.pick-row { display:flex; align-items:center; gap:10px; padding:7px 8px; border-radius:10px; cursor:pointer; }
+.pick-row:hover { background:var(--hover); }
+.pick-row input { width:16px; height:16px; accent-color:var(--accent); }
+.pick-row .avatar { width:26px; height:26px; }
+.pick-row .name { flex:1; font-weight:500; }
+.bigbtn { width:100%; margin-top:12px; padding:9px; border:0; border-radius:10px; background:var(--accent); color:var(--accent-ink); font-weight:600; cursor:pointer; }
+.bigbtn:disabled { opacity:.35; cursor:default; }
 #list { max-width:860px; margin:0 auto; }
 .enter { animation:rise .3s cubic-bezier(.2, .7, .3, 1) both; }
 #empty { display:flex; flex-direction:column; align-items:center; gap:14px; margin-top:16vh; text-align:center; }
@@ -663,6 +719,12 @@ main.page > #convbar, main.page > #stream, main.page > #composer { display:none;
   </div>
 </aside>
 <div id="backdrop"></div>
+<div id="modal" hidden>
+  <div class="mcard" role="dialog" aria-modal="true">
+    <div class="mhead"><span id="mtitle"></span><button id="mclose" class="iconbtn" aria-label="关闭"><span data-icon="x"></span></button></div>
+    <div id="mbody"></div>
+  </div>
+</div>
 <main id="main">
   <div id="convbar">
     <button id="menuBtn" class="btn" aria-label="成员列表"><span data-icon="menu"></span></button>
@@ -733,6 +795,8 @@ const ICONS = {
   archive: '<rect x="3.5" y="4" width="17" height="4.5" rx="1.5"/><path d="M5.5 8.5V18a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8.5"/><path d="M10 12.5h4"/>',
   trash: '<path d="M4 7h16"/><path d="M9 7V4.5h6V7"/><path d="M6.5 7l1 12.5a1.5 1.5 0 0 0 1.5 1.5h6a1.5 1.5 0 0 0 1.5-1.5l1-12.5"/>',
   chat: '<path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.2A8 8 0 1 1 20 12z"/>',
+  fwd: '<path d="M14 5l6 6-6 6"/><path d="M20 11H10a6 6 0 0 0-6 6v2"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
   palette: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.8-.8 1.8-1.8 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.8 1.8-1.8H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11.5" r="1"/><circle cx="10" cy="7.5" r="1"/><circle cx="14.5" cy="7.5" r="1"/>',
 };
 const LOGO = '<path d="M6 13h17v6a7 7 0 0 1-7 7h-3a7 7 0 0 1-7-7z"/><path d="M23 15h1.5a3.5 3.5 0 0 1 0 7H22.4"/><path d="M11.5 9.5c0-1.6 1.6-1.6 1.6-3.2s-1.6-1.6-1.6-3.2"/><path d="M17 9.5c0-1.6 1.6-1.6 1.6-3.2S17 4.7 17 3.1"/>';
@@ -801,8 +865,9 @@ function bot(name, online, still) {
   return a;
 }
 
-function human() {  // 用户是人：圆脸小人（呆毛、腮红、微笑），和机器人一眼就能分开
-  const a = el("div", "avatar human");
+function human(name) {  // 人：圆脸小人（呆毛、腮红、微笑），和机器人一眼就能分开；同事的发色按名字变
+  const a = el("div", "avatar human" + (name ? " peer" : ""));
+  if (name) a.style.setProperty("--hh", hue(name));
   a.innerHTML = '<svg viewBox="1 -0.5 38 35" aria-hidden="true"><g class="face">' +
     '<path class="strand" d="M20.5 7.6c-.5-2.6.8-4.6 3.3-5.2"/>' +
     '<circle class="skin" cx="7.8" cy="20.6" r="2.2"/><circle class="skin" cx="32.2" cy="20.6" r="2.2"/>' +
@@ -814,8 +879,183 @@ function human() {  // 用户是人：圆脸小人（呆毛、腮红、微笑）
   return a;
 }
 
-function avatar(name, online, still) {
-  return name === "user" ? human() : bot(name, online, still);
+function avatar(name, online, still, kind) {
+  if (name === "user") return human();
+  if ((kind || (agentsByName[name] || {}).kind) === "remote") return human(name);  // 别的电脑上的同事
+  return bot(name, online, still);
+}
+
+function kindLabel(k) { return k === "remote" ? "同事" : k; }
+
+function post(path, data) {
+  return api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+}
+
+// ---- 弹窗（团队设置、转发共用） ----
+let modalCleanup = null;
+function openModal(title, body, onClose) {
+  closeModal();
+  $("mtitle").textContent = title;
+  $("mbody").replaceChildren(body);
+  $("modal").hidden = false;
+  modalCleanup = onClose || null;
+}
+function closeModal() {
+  if (modalCleanup) { modalCleanup(); modalCleanup = null; }
+  $("modal").hidden = true;
+  $("mbody").textContent = "";
+}
+
+function tsec(title, sub) {
+  const s = el("div", "tsec");
+  s.append(el("h3", "", title));
+  if (sub) s.append(el("div", "tsub", sub));
+  return s;
+}
+function trow(...kids) { const r = el("div", "trow"); r.append(...kids); return r; }
+function flash(where, out, okText) {
+  where.querySelector(".mok, .merr")?.remove();
+  where.append(el("div", out.ok ? "mok" : "merr", out.message || (out.ok ? okText || "好了" : "失败")));
+}
+
+// ---- 团队：配对同事、开关团队连接、我的名字 ----
+let codeTimer = null;
+async function openTeam() {
+  closeSide();
+  const body = el("div", "team");
+  openModal("团队", body, () => { clearInterval(codeTimer); codeTimer = null; });
+  await renderTeam(body);
+}
+
+async function renderTeam(body) {
+  const t = await api("/api/team");
+  if (!t.me) return;
+  clearInterval(codeTimer);
+  body.textContent = "";
+
+  const s1 = tsec("我的名字", "同事那边会看到你叫这个名字");
+  const nameIn = el("input", "tin");
+  nameIn.value = t.me.name; nameIn.maxLength = 32;
+  const save = el("button", "btn", "保存");
+  save.onclick = async () => flash(s1, await post("/api/team/me", { name: nameIn.value.trim() }));
+  s1.append(trow(nameIn, save));
+
+  const s2 = tsec("让别人加我", "开启后在 " + t.share.port + " 端口等同事连进来，只接受配对过的人");
+  const sw = el("button", "switch" + (t.share.on ? " on" : ""));
+  sw.setAttribute("aria-label", "团队连接");
+  sw.onclick = async () => {
+    const out = await post("/api/team/share", { on: !t.share.on });
+    if (!out.ok) return flash(s2, out);
+    await renderTeam(body);
+  };
+  s2.append(trow(el("span", "grow", t.share.on ? "团队连接已开启" : "团队连接已关闭"), sw));
+  if (t.share.on) {
+    // 第一个是默认出口网卡的地址，最可能是对的；其余多半是 VMware / WSL 之类的虚拟网卡
+    const addrs = (t.share.addresses.length ? t.share.addresses : ["本机 IP"]).map(ip => ip + ":" + t.share.port);
+    s2.append(el("div", "mlabel", "把下面的地址和配对码告诉同事："), el("div", "addr", addrs[0]));
+    if (addrs.length > 1) s2.append(el("div", "mnote", "连不上时试试其他网卡：" + addrs.slice(1).join("、")));
+    let code = t.code;
+    if (!code) {
+      const out = await post("/api/team/code", {});
+      if (out.ok) code = { code: out.code, expires_in: out.expires_in };
+    }
+    if (code) {
+      const left = el("span", "mnote");
+      const again = el("button", "btn", "换一个");
+      again.onclick = async () => { await post("/api/team/code", {}); renderTeam(body); };
+      s2.append(trow(el("span", "code", code.code), left, again));
+      const end = Date.now() + code.expires_in * 1000;
+      const tick = () => {
+        const s = Math.max(0, Math.round((end - Date.now()) / 1000));
+        left.textContent = s ? "一次性，" + Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") + " 后失效" : "已失效，点「换一个」";
+      };
+      tick();
+      codeTimer = setInterval(tick, 1000);
+    }
+  }
+
+  const s3 = tsec("我去加别人", "输入同事网页上显示的地址和配对码");
+  const addrIn = el("input", "tin");
+  addrIn.placeholder = "192.168.1.5:8766";
+  const codeIn = el("input", "tin code-in");
+  codeIn.placeholder = "6 位配对码"; codeIn.maxLength = 6; codeIn.inputMode = "numeric";
+  const join = el("button", "btn", "配对");
+  join.onclick = async () => {
+    join.disabled = true;
+    const out = await post("/api/team/join", { address: addrIn.value, code: codeIn.value.trim() });
+    join.disabled = false;
+    if (out.ok) { agentJson = ""; poll(); await renderTeam(body); flash(body.querySelector(".tsec:nth-child(3)"), out); }
+    else flash(s3, out);
+  };
+  s3.append(trow(addrIn, codeIn, join));
+
+  const s4 = tsec("已配对 · " + t.peers.length);
+  if (!t.peers.length) s4.append(el("div", "mnote", "还没有同事"));
+  for (const p of t.peers) {
+    const r = el("div", "prow");
+    const info = el("div", "info");
+    info.append(el("div", "name", p.alias),
+      el("div", "cwd", (p.name !== p.alias ? p.name + " · " : "") + p.address + " · " + (p.online ? "在线" : "离线")));
+    const rm = el("button", "btn danger", "解除配对");
+    rm.onclick = async () => {
+      if (!confirm("和 " + p.alias + " 解除配对？聊天记录会保留，之后可以重新配对。")) return;
+      await post("/api/team/remove", { name: p.alias });
+      agentJson = ""; poll();
+      await renderTeam(body);
+    };
+    r.append(avatar(p.alias, p.online, true, "remote"), info, rm);
+    s4.append(r);
+  }
+
+  const s5 = el("div", "tsec");
+  s5.append(el("div", "mnote",
+    "同事发来的消息只会到你这里，不会自动交给 agent；需要时点消息上的「转发」。" +
+    "消息在网络上是明文：同一个局域网直接用，跨网络请用 Tailscale 这类自带加密的组网工具。" +
+    "Windows 第一次开启团队连接时可能弹出防火墙提示，选「允许专用网络」。"));
+  body.append(s1, s2, s3, s4, s5);
+}
+
+// ---- 转发：把一条消息转给本机 agent 或同事 ----
+function openForward(m) {
+  const body = el("div", "fwd");
+  const text = m.text || "";
+  body.append(el("div", "mlabel", shown(m.sender) + " 的消息 #" + m.id + (m.files.length ? "（附件 " + m.files.length + " 个，会一起转发）" : "")),
+              el("div", "fwd-preview", text.length > 200 ? text.slice(0, 200) + "…" : text || "（只有附件）"));
+  const chosen = new Set();
+  const go = el("button", "bigbtn", "转发");
+  go.disabled = true;
+  const list = el("div", "pick");
+  const cands = Object.values(agentsByName)
+    .filter(a => !a.hidden && a.name !== "user" && a.name !== m.sender)
+    .sort((x, y) => (y.online - x.online) || ((x.kind === "remote") - (y.kind === "remote")));
+  for (const a of cands) {
+    const row = el("label", "pick-row");
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.onchange = () => { cb.checked ? chosen.add(a.name) : chosen.delete(a.name); go.disabled = !chosen.size; };
+    row.append(cb, avatar(a.name, a.online, true, a.kind), el("span", "name", a.name), el("span", "kind", kindLabel(a.kind)));
+    list.append(row);
+  }
+  if (!cands.length) list.append(el("div", "mnote", "没有可以转发的对象"));
+  go.onclick = async () => {
+    go.disabled = true;
+    const out = await post("/api/forward", { id: m.id, to: [...chosen] });
+    if (!out.ok) { go.disabled = false; return flash(body, out); }
+    closeModal(); poll();
+  };
+  body.append(list, el("div", "mnote", "转发的消息会标明「转发自 " + shown(m.sender) + "」。转给 agent 时，它会当作参考信息。"), go);
+  openModal("转发", body);
+}
+
+// ---- 发往别的电脑的消息：已送达 / 等待送达 ----
+const deliveryEls = {};
+function setDelivery(id, d) {
+  const box = deliveryEls[id];
+  if (!box || !d) return;
+  const sent = d.state === "sent";
+  box.className = "dstate " + (sent ? "sent" : "pending");
+  box.title = sent ? "" : (d.error ? "上次失败：" + d.error + "（会自动重试）" : "对方不在线时会自动重试");
+  box.replaceChildren(icon(sent ? "check" : "clock", 12), el("span", "", sent ? "已送达" : "等待送达…"));
 }
 
 function logoMark(size) {
@@ -861,13 +1101,30 @@ function renderAgents(agents) {
   agentJson = j;
   const shownAgents = agents.filter(a => !a.hidden);  // 离线超过 7 天的收进「已隐藏」子页面
   const hiddenN = agents.length - shownAgents.length;
-  const online = shownAgents.filter(a => a.online), offline = shownAgents.filter(a => !a.online);
+  const team = shownAgents.filter(a => a.kind === "remote").sort((x, y) => y.online - x.online);
+  const local = shownAgents.filter(a => a.kind !== "remote");
+  const online = local.filter(a => a.online), offline = local.filter(a => !a.online);
   const n = online.filter(a => a.name !== "user").length;
   $("brandsub").textContent = n ? n + " 个 agent 在线" : "本地聊天室 · 暂无 agent 在线";
   const box = $("agents");
   box.textContent = "";
   box.append(el("div", "section", "在线 · " + online.length));
   for (const a of online) box.append(agentRow(a));
+  // 团队：别的电脑上的同事（人和人之间；他们的消息只到你这里）
+  const th = el("div", "section team-head");
+  const addBtn = el("button", "mini");
+  addBtn.append(icon("plus", 13));
+  addBtn.title = "添加同事 / 团队设置";
+  addBtn.onclick = openTeam;
+  th.append(el("span", "grow", "团队 · " + team.filter(a => a.online).length + "/" + team.length), addBtn);
+  box.append(th);
+  for (const a of team) box.append(agentRow(a));
+  if (!team.length) {
+    const hint = el("button", "team-hint");
+    hint.append(icon("plus", 14), el("span", "", "添加同事，跨电脑互发消息"));
+    hint.onclick = openTeam;
+    box.append(hint);
+  }
   if (offline.length) {
     // 离线的默认折叠；轮询重绘时保持用户上次的展开状态
     const det = el("details", "offline");
@@ -951,9 +1208,12 @@ function agentRow(a) {
   const info = el("div", "info");
   const line1 = el("div", "line1");
   line1.append(el("span", "name", a.name));
-  if (a.name !== "user") line1.append(el("span", "kind", a.kind));
-  info.append(line1, el("div", "cwd", a.name === "user" ? "你 · 网页" : a.cwd));
-  const av = avatar(a.name, a.online);
+  if (a.name !== "user") line1.append(el("span", "kind", kindLabel(a.kind)));
+  const sub = a.name === "user" ? "你 · 网页"
+    : a.kind === "remote" ? ((a.peer_name && a.peer_name !== a.name ? a.peer_name + " · " : "") + (a.online ? "在线" : "离线") + " · " + a.cwd)
+    : a.cwd;
+  info.append(line1, el("div", "cwd", sub));
+  const av = avatar(a.name, a.online, false, a.kind);
   if ((talking[a.name] || 0) > Date.now()) av.classList.add("talk");
   div.append(av, info);
   if (a.name !== "user") {
@@ -968,8 +1228,8 @@ function agentRow(a) {
     };
     div.append(add);
   }
-  // 点 agent = 和它对话；再点一次（或点 user）回到全部消息
-  div.onclick = () => select(a.name === "user" || a.name === selected ? null : a.name);
+  // 点 agent / 同事 = 和它对话；点 user = 我的消息（在那里发送 = 发给自己）；再点一次回到全部消息
+  div.onclick = () => select(a.name === selected ? null : a.name);
   return div;
 }
 
@@ -982,9 +1242,10 @@ let emptyKey = "logo";
 function updateEmpty() {
   const any = [...$("list").children].some(e => !e.hidden);
   $("empty").hidden = any;
-  $("emptyTitle").textContent = selected || "kopitiam";
-  $("emptySub").textContent = selected ? "和 " + selected + " 还没有消息" : "还没有消息，在下面写第一句吧";
-  // 选中某个 agent 时换成它的大号机器人；只在变化时重建，否则每次轮询都会把动画打断
+  $("emptyTitle").textContent = selected === "user" ? "我的消息" : selected || "kopitiam";
+  $("emptySub").textContent = selected === "user" ? "在这里发送 = 发给自己，当备忘用"
+    : selected ? "和 " + selected + " 还没有消息" : "还没有消息，在下面写第一句吧";
+  // 选中某个 agent 时换成它的大号头像；只在变化时重建，否则每次轮询都会把动画打断
   const a = selected && selected !== "user" ? agentsByName[selected] : null;
   const key = selected ? selected + "|" + !!(a && a.online) : "logo";
   if (key !== emptyKey) {
@@ -1000,9 +1261,9 @@ function applyFilter() {
 
 function updateConvbar() {
   const a = selected && agentsByName[selected];
-  $("convtitle").textContent = selected ? "与 " + selected + " 的对话" : "全部消息";
-  $("convsub").textContent = selected
-    ? (a ? a.kind + " · " + (a.online ? "在线" : "离线") + " · " + a.cwd : "")
+  $("convtitle").textContent = selected === "user" ? "我的消息" : selected ? "与 " + selected + " 的对话" : "全部消息";
+  $("convsub").textContent = selected === "user" ? "发给你的、你发的都在这里；在这里发送 = 发给自己（备忘）"
+    : selected ? (a ? kindLabel(a.kind) + " · " + (a.online ? "在线" : "离线") + " · " + a.cwd : "")
     : "所有人之间的消息都在这里";
   $("showAll").hidden = !selected;
   $("convAvatar").hidden = !selected;
@@ -1047,13 +1308,17 @@ function addMessage(m, backfill) {
     div.append(el("span", "", m.text.slice(1, -1)));
   } else {
     div = el("div", "msg" + (mine ? " mine" : ""));
-    if (!mine) div.append(avatar(m.sender, true, true));  // 消息里的头像不加动画，免得满屏都在动
+    if (!mine) div.append(avatar(m.sender, true, true, m.sender_kind));  // 消息里的头像不加动画，免得满屏都在动
     const body = el("div", "body");
     const meta = el("div", "meta");
     const who = el("span", "who", shown(m.sender));
     who.style.setProperty("--h", hue(m.sender));
+    const fwd = el("button", "fwdbtn");
+    fwd.append(icon("fwd", 14));
+    fwd.title = "转发给 agent 或同事";
+    fwd.onclick = () => openForward(m);
     meta.append(who, el("span", "", "→ " + (m.to.length ? m.to.map(shown).join("、") : "所有人")),
-                el("span", "", fmtTime(m.time)), el("span", "id", "#" + m.id));
+                el("span", "", fmtTime(m.time)), el("span", "id", "#" + m.id), fwd);
     body.append(meta);
     if (m.text) body.append(el("div", "bubble", m.text));
     if ((m.files || []).length) {
@@ -1076,6 +1341,11 @@ function addMessage(m, backfill) {
       }
       body.append(files);
     }
+    if (m.delivery) {  // 发往别的电脑的消息
+      deliveryEls[m.id] = el("div", "dstate");
+      body.append(deliveryEls[m.id]);
+      setDelivery(m.id, m.delivery);
+    }
     div.append(body);
   }
   div._m = m;
@@ -1095,6 +1365,7 @@ async function poll() {
   const s = $("stream");
   const atBottom = s.scrollTop + s.clientHeight >= s.scrollHeight - 40;
   for (const m of (st.messages || [])) addMessage(m);
+  for (const [id, d] of Object.entries(st.deliveries || {})) setDelivery(id, d);
   renderAgents(st.agents || []);
   updateEmpty();
   if ((st.messages || []).length && atBottom) s.scrollTop = s.scrollHeight;
@@ -1196,9 +1467,12 @@ $("themeBtn").onclick = (e) => { e.stopPropagation(); $("themePop").hidden = !$(
 document.addEventListener("click", (e) => { if (!$("themePop").contains(e.target)) $("themePop").hidden = true; });
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if (!$("themePop").hidden) $("themePop").hidden = true;
+  if (!$("modal").hidden) closeModal();
+  else if (!$("themePop").hidden) $("themePop").hidden = true;
   else if (!$("hiddenPage").hidden) closeHidden();
 });
+$("mclose").onclick = closeModal;
+$("modal").onclick = (e) => { if (e.target === $("modal")) closeModal(); };  // 点弹窗外面关闭
 $("hiddenBack").onclick = closeHidden;
 $("send").onclick = send;
 $("showAll").onclick = () => select(null);
