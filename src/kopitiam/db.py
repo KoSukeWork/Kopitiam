@@ -189,9 +189,20 @@ def claim(kind: str, cwd: str | None = None, *, name: str | None = None,
                     c.execute("COMMIT")
                     return int(row["id"])
                 if row is not None:
-                    # 名字被在线的进程占用：改用 名字-2、名字-3……第一个空闲的，新建一行
+                    # 名字被在线的进程占用：依次看 名字-2、名字-3……
+                    # 已存在但离线的就认领（否则每次重启都会多出一行），都在线才新建
                     i = 2
-                    while _name_taken(c, f"{name}-{i}"):
+                    while True:
+                        alt = c.execute("SELECT * FROM agents WHERE name = ?", (f"{name}-{i}",)).fetchone()
+                        if alt is None:
+                            break
+                        if not is_online(alt):
+                            c.execute(
+                                "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, kind=? WHERE id=?",
+                                (pid, pid_ctime, now_iso(), kind, alt["id"]),
+                            )
+                            c.execute("COMMIT")
+                            return int(alt["id"])
                         i += 1
                     name = f"{name}-{i}"
                 agent_id = _insert_agent(c, name=name, kind=kind, cwd=cwd,

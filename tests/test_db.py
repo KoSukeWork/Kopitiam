@@ -95,6 +95,20 @@ def test_two_online_agents_distinct_pids(home):
         proc.wait(timeout=15)
 
 
+def test_named_claim_reuses_offline_suffix_rows(home):
+    # --name codex 被占用时用 codex-2；codex-2 退出后，下次应认领它，而不是再建 codex-3
+    proj = str(home / "Proj")
+    a = db.claim("codex", cwd=proj, name="codex", pid=os.getpid())
+    b = db.claim("codex", cwd=proj, name="codex", pid=os.getppid())
+    assert db.Chat().whoami(b).startswith("你是 codex-2")
+    db.release(b)
+    c = db.claim("codex", cwd=proj, name="codex", pid=os.getppid())
+    assert c == b
+    with db._conn() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM agents WHERE kind='codex'").fetchone()[0] == 2
+    assert a != c
+
+
 def _row(pid):
     from kopitiam.db import _conn
 
