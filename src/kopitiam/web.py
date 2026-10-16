@@ -199,7 +199,13 @@ details.offline { margin-top:10px; border-top:1px solid var(--line); padding-top
 details.offline summary { cursor:pointer; color:var(--muted); font-size:12px; padding:4px 10px; user-select:none; }
 details.offline .agent { opacity:.7; }
 .agent:hover { background:var(--bg); }
+.agent.active { background:var(--bg); box-shadow:inset 3px 0 0 var(--accent); }
 .agent .top { display:flex; align-items:baseline; }
+.agent .add { margin-left:auto; border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:6px; cursor:pointer; font-size:12px; line-height:1; padding:2px 6px; }
+.agent .add:hover { color:var(--accent); border-color:var(--accent); }
+#convbar { display:flex; align-items:center; gap:10px; padding:8px 20px; border-bottom:1px solid var(--line); background:var(--panel); font-size:13px; }
+#convbar .title { font-weight:600; }
+#convbar button { font-size:12px; padding:3px 10px; }
 .agent .name { font-weight:600; }
 .agent .kind { color:var(--muted); font-size:11px; margin-left:8px; }
 .agent .cwd { color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -232,6 +238,7 @@ button.ghost { padding:6px 10px; border:1px solid var(--line); background:transp
 <body>
 <aside id="side"><h1>kopitiam</h1><div id="agents"></div></aside>
 <main>
+  <div id="convbar"><span class="title" id="convtitle">全部消息</span><button id="showAll" class="ghost" hidden>显示全部</button></div>
   <div id="stream"></div>
   <div id="composer">
     <input id="to" placeholder="发给（逗号分隔，留空 = 所有人）">
@@ -250,6 +257,7 @@ button.ghost { padding:6px 10px; border:1px solid var(--line); background:transp
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const $ = (id) => document.getElementById(id);
 let lastId = 0, pendingFiles = [], agentJson = "", offlineOpen = false;
+let selected = null;  // 当前对话的 agent 名字；null = 显示全部消息
 const known = new Set();
 
 function api(path, opts) {
@@ -272,7 +280,7 @@ function fmtTime(iso) {
 }
 
 function renderAgents(agents) {
-  const j = JSON.stringify(agents);
+  const j = JSON.stringify(agents) + "|" + selected;
   if (j === agentJson) return;
   agentJson = j;
   const box = $("agents");
@@ -295,7 +303,7 @@ function renderAgents(agents) {
 
 function agentRow(a) {
   const div = document.createElement("div");
-  div.className = "agent";
+  div.className = "agent" + (a.name === selected ? " active" : "");
   div.title = a.cwd;
   const top = document.createElement("div"); top.className = "top";
   const dot = document.createElement("span"); dot.className = "dot";
@@ -304,15 +312,46 @@ function agentRow(a) {
   const name = document.createElement("span"); name.className = "name"; name.textContent = a.name;
   const kind = document.createElement("span"); kind.className = "kind"; kind.textContent = a.kind;
   top.append(dot, name, kind);
+  if (a.name !== "user") {
+    const add = document.createElement("button");
+    add.className = "add"; add.textContent = "＋"; add.title = "加到「发给」（可以同时发给多个）";
+    add.onclick = (e) => {
+      e.stopPropagation();  // 只加收件人，不切换对话
+      const cur = $("to").value.split(",").map(s => s.trim()).filter(Boolean);
+      if (!cur.includes(a.name)) cur.push(a.name);
+      $("to").value = cur.join(", ");
+    };
+    top.append(add);
+  }
   const cwd = document.createElement("div"); cwd.className = "cwd";
   cwd.textContent = a.name === "user" ? "—" : a.cwd;
   div.append(top, cwd);
-  div.onclick = () => {  // 点名字加进"发给"框
-    const cur = $("to").value.split(",").map(s => s.trim()).filter(Boolean);
-    if (!cur.includes(a.name) && a.name !== "user") cur.push(a.name);
-    $("to").value = cur.join(", ");
-  };
+  // 点 agent = 和它对话；再点一次（或点 user）回到全部消息
+  div.onclick = () => select(a.name === "user" || a.name === selected ? null : a.name);
   return div;
+}
+
+function involves(m, name) {
+  // 和它有关：它发的、发给它的、以及广播（它也收得到）
+  return m.sender === name || m.to.includes(name) || m.to.length === 0;
+}
+
+function applyFilter() {
+  for (const el of $("stream").children) {
+    el.hidden = selected !== null && !involves(el._m, selected);
+  }
+}
+
+function select(name) {
+  selected = name;
+  $("convtitle").textContent = name ? "与 " + name + " 的对话" : "全部消息";
+  $("showAll").hidden = !name;
+  $("to").value = name || "";
+  agentJson = "";  // 强制重绘左栏，更新高亮
+  poll();
+  applyFilter();
+  const el = $("stream"); el.scrollTop = el.scrollHeight;
+  $("text").focus();
 }
 
 function addMessage(m) {
@@ -320,6 +359,8 @@ function addMessage(m) {
   known.add(m.id);
   if (m.id > lastId) lastId = m.id;  // 下次轮询只要更新的消息
   const div = document.createElement("div");
+  div._m = m;
+  div.hidden = selected !== null && !involves(m, selected);
   div.className = "msg" + (m.sender === "user" ? " mine" : "");
   const meta = document.createElement("div"); meta.className = "meta";
   meta.textContent = "#" + m.id + " " + fmtTime(m.time) + " " + m.sender + " → " + (m.to.length ? m.to.join("、") : "所有人");
@@ -388,6 +429,7 @@ async function upload(files) {
 }
 
 $("send").onclick = send;
+$("showAll").onclick = () => select(null);
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.ctrlKey) send(); });
 $("pick").onclick = () => $("file").click();
 $("file").onchange = (e) => { upload([...e.target.files]); e.target.value = ""; };
