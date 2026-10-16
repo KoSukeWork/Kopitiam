@@ -1,0 +1,9 @@
+{"type":"user","isSidechain":false,"cwd":"E:\\Proj","timestamp":"2026-10-15T05:48:17Z","message":{"role":"user","content":"帮我看下登录"}}
+{"type":"assistant","isSidechain":false,"timestamp":"2026-10-15T05:48:20Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":""},{"type":"text","text":"我先看代码"},{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"src/a.ts"}}]}}
+{"type":"user","isSidechain":false,"timestamp":"2026-10-15T05:48:25Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"文件内容..."}]}}
+{"type":"user","isMeta":true,"message":{"role":"user","content":"<local-command-caveat>...</local-command-caveat>"}}
+{"type":"user","isSidechain":false,"isCompactSummary":true,"isVisibleInTranscriptOnly":true,"timestamp":"2026-10-15T05:49:00Z","message":{"role":"user","content":"摘要内容"}}
+{"type":"user","isSidechain":false,"timestamp":"2026-10-15T05:49:10Z","message":{"role":"user","content":"<command-name>/clear</command-name>"}}
+{"type":"mode","x":1}
+{"type":"user","isSidechain":false,"timestamp":"2026-10-15T05:49:20Z","message":{"role":"user","content":"<local-command-foo>跳过我</local-command-foo>"}}
+{这不是一行合法的 JSON

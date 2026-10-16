@@ -38,7 +38,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "web":
         raise SystemExit("尚未实现：web（里程碑 6）")
     if args.cmd == "export":
-        raise SystemExit("尚未实现：export（里程碑 4）")
+        return _run_export(args)
+    return 0
+
+
+def _run_export(args) -> int:
+    from .export import ExportError, export_context
+
+    try:
+        out, stats = export_context(
+            args.agent, args.cwd, args.agent,
+            mode=args.mode, session_file=args.session_file,
+        )
+    except ExportError as e:
+        print(f"错误：{e}", file=sys.stderr)
+        return 1
+    print(f"已导出 → {out}")
+    print(f"（来源 {stats['source']}，{stats['turns']} 轮，{stats['bytes']} 字节，模式 {args.mode}）")
     return 0
 
 

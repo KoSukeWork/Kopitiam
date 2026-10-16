@@ -1,0 +1,11 @@
+{"type":"session","version":3,"id":"s1","cwd":"Q:\\Work"}
+{"type":"model_change","id":"a1","parentId":null,"provider":"deepseek","modelId":"glm-5.3"}
+{"type":"message","id":"m0","parentId":"a1","message":{"role":"system","content":"系统提示"}}
+{"type":"message","id":"m1","parentId":"m0","timestamp":"2026-10-15T07:00:00Z","message":{"role":"user","content":[{"type":"text","text":"研究一下这个"}]}}
+{"type":"message","id":"m2a","parentId":"m1","timestamp":"2026-10-15T07:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"分支A（不该出现）"}]}}
+{"type":"message","id":"m2b","parentId":"m1","timestamp":"2026-10-15T07:00:02Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"想想"},{"type":"text","text":"好"},{"type":"toolCall","id":"t1","name":"web_search","arguments":{"q":"x"}}]}}
+{"type":"message","id":"m3","parentId":"m2b","timestamp":"2026-10-15T07:00:03Z","message":{"role":"toolResult","toolCallId":"t1","toolName":"web_search","content":[{"type":"text","text":"结果..."}]}}
+{"type":"message","id":"m4","parentId":"m3","timestamp":"2026-10-15T07:00:04Z","message":{"role":"bashExecution","command":"git status","output":"nothing to commit"}}
+{"type":"compaction","id":"c1","parentId":"m4","summary":"摘要..."}
+{"type":"custom_thing","id":"x9","parentId":"c1","data":{}}
+{坏行
