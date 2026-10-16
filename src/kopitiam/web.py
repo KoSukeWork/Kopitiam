@@ -186,70 +186,165 @@ INDEX_HTML = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>kopitiam</title>
 <style>
-:root { --bg:#f6f7f9; --panel:#fff; --ink:#1c1e21; --muted:#8a929e; --line:#e4e7ec; --accent:#3370ff; }
-@media (prefers-color-scheme: dark) {
-  :root { --bg:#15171a; --panel:#1f2227; --ink:#e8eaed; --muted:#9aa0a6; --line:#2c3037; --accent:#5b8dff; }
+:root {
+  color-scheme: light dark;
+  --bg:#f3f4f6; --panel:#ffffff; --hover:#f2f3f5; --ink:#1d2129; --ink-2:#4e5969; --muted:#86909c; --line:#e5e6eb;
+  --accent:#3370ff; --accent-soft:rgba(51,112,255,.10); --ok:#00b42a; --name-l:40%; --shadow:0 1px 2px rgba(15,23,42,.06);
 }
-* { box-sizing: border-box; }
-body { margin:0; font-family: system-ui, "Microsoft YaHei", sans-serif; background:var(--bg); color:var(--ink); display:flex; height:100vh; }
-aside { width:260px; min-width:220px; background:var(--panel); border-right:1px solid var(--line); overflow-y:auto; padding:12px; }
-aside h1 { font-size:14px; margin:4px 0 10px; color:var(--muted); }
-.agent { padding:8px 10px; border-radius:8px; cursor:pointer; }
-details.offline { margin-top:10px; border-top:1px solid var(--line); padding-top:6px; }
-details.offline summary { cursor:pointer; color:var(--muted); font-size:12px; padding:4px 10px; user-select:none; }
-details.offline .agent { opacity:.7; }
-.agent:hover { background:var(--bg); }
-.agent.active { background:var(--bg); box-shadow:inset 3px 0 0 var(--accent); }
-.agent .top { display:flex; align-items:baseline; }
-.agent .add { margin-left:auto; border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:6px; cursor:pointer; font-size:12px; line-height:1; padding:2px 6px; }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#0f1115; --panel:#171a1f; --hover:#1f232a; --ink:#e6e8eb; --ink-2:#b4bac3; --muted:#7d8590; --line:#272b32;
+    --accent:#5b8dff; --accent-soft:rgba(91,141,255,.16); --ok:#3ccf62; --name-l:70%; --shadow:none;
+  }
+}
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+html, body { height:100%; }
+body {
+  margin:0; display:flex; background:var(--bg); color:var(--ink);
+  font:14px/1.5 "Segoe UI", system-ui, -apple-system, "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+button, input, textarea { font:inherit; color:inherit; }
+::placeholder { color:var(--muted); }
+::-webkit-scrollbar { width:10px; height:10px; }
+::-webkit-scrollbar-thumb { background:var(--line); border-radius:10px; border:3px solid transparent; background-clip:content-box; }
+
+/* ---- 左栏 ---- */
+aside { width:280px; flex-shrink:0; display:flex; flex-direction:column; background:var(--panel); border-right:1px solid var(--line); }
+.brand { padding:18px 20px 10px; }
+.brand .logo { font-size:17px; font-weight:700; letter-spacing:.2px; }
+.brand .sub { font-size:12px; color:var(--muted); margin-top:2px; }
+#agents { flex:1; overflow-y:auto; padding:2px 10px 16px; }
+.section { display:flex; align-items:center; gap:6px; padding:14px 10px 6px; font-size:12px; font-weight:600; color:var(--muted); letter-spacing:.3px; }
+details.offline > summary { list-style:none; cursor:pointer; user-select:none; }
+details.offline > summary::-webkit-details-marker { display:none; }
+details.offline > summary::before { content:"▸"; display:inline-block; font-size:10px; transition:transform .15s; }
+details.offline[open] > summary::before { transform:rotate(90deg); }
+details.offline > summary:hover { color:var(--ink-2); }
+
+.agent { display:flex; align-items:center; gap:11px; padding:8px 10px; margin:2px 0; border-radius:10px; cursor:pointer; }
+.agent:hover { background:var(--hover); }
+.agent.active { background:var(--accent-soft); }
+.agent.active .name { color:var(--accent); }
+.avatar {
+  position:relative; flex-shrink:0; width:34px; height:34px; border-radius:50%;
+  display:grid; place-items:center; font-size:14px; font-weight:600; color:#fff;
+  background:hsl(var(--h) 55% 52%);
+}
+.avatar .st { position:absolute; right:-1px; bottom:-1px; width:11px; height:11px; border-radius:50%; background:var(--ok); border:2px solid var(--panel); }
+.agent.off .avatar { filter:grayscale(1); opacity:.5; }
+.agent .info { flex:1; min-width:0; }
+.agent .line1 { display:flex; align-items:center; gap:6px; min-width:0; }
+.agent .name { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.kind { flex-shrink:0; padding:0 6px; border-radius:4px; font-size:11px; line-height:17px; color:var(--ink-2); background:var(--hover); }
+.agent:hover .kind, .agent.active .kind { background:var(--panel); }
+.agent .cwd { margin-top:1px; font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.agent .add {
+  flex-shrink:0; width:26px; height:26px; display:grid; place-items:center; cursor:pointer;
+  border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--ink-2); font-size:15px; line-height:1;
+}
 .agent .add:hover { color:var(--accent); border-color:var(--accent); }
-#convbar { display:flex; align-items:center; gap:10px; padding:8px 20px; border-bottom:1px solid var(--line); background:var(--panel); font-size:13px; }
-#convbar .title { font-weight:600; }
-#convbar button { font-size:12px; padding:3px 10px; }
-.agent .name { font-weight:600; }
-.agent .kind { color:var(--muted); font-size:11px; margin-left:8px; }
-.agent .cwd { color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.dot { margin-right:6px; font-size:10px; }
-main { flex:1; display:flex; flex-direction:column; min-width:0; }
-#stream { flex:1; overflow-y:auto; padding:16px 20px; }
-.msg { max-width:72%; margin:6px 0; }
-.msg.mine { margin-left:auto; }
-.meta { font-size:11px; color:var(--muted); margin-bottom:2px; }
-.bubble { display:inline-block; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px 12px; white-space:pre-wrap; word-break:break-word; }
-.msg.mine .bubble { background:var(--accent); color:#fff; border-color:var(--accent); }
-.fileline { font-size:12px; margin-top:4px; }
-.fileline a { color:var(--accent); }
-.fileline button { margin-left:6px; font-size:11px; border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:6px; cursor:pointer; }
-#composer { border-top:1px solid var(--line); background:var(--panel); padding:10px 12px; }
-#to { width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); margin-bottom:8px; }
-#text { width:100%; height:64px; resize:vertical; padding:8px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font:inherit; }
-.row { display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap; }
-button.act { padding:6px 14px; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
-button.ghost { padding:6px 10px; border:1px solid var(--line); background:transparent; color:var(--ink); border-radius:8px; cursor:pointer; }
-.chip { display:inline-flex; align-items:center; background:var(--bg); border:1px solid var(--line); border-radius:999px; padding:2px 10px; font-size:12px; cursor:pointer; }
+@media (hover:hover) {
+  .agent .add { opacity:0; }
+  .agent:hover .add, .agent .add:focus-visible { opacity:1; }
+}
+
+/* ---- 主区 ---- */
+main { flex:1; min-width:0; display:flex; flex-direction:column; }
+#convbar { flex-shrink:0; display:flex; align-items:center; gap:12px; height:58px; padding:0 24px; background:var(--panel); border-bottom:1px solid var(--line); }
+#convbar .titles { flex:1; min-width:0; }
+#convtitle { font-size:15px; font-weight:600; }
+#convsub { font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.btn { padding:5px 12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink); font-size:13px; cursor:pointer; }
+.btn:hover { background:var(--hover); }
 #menuBtn { display:none; }
+
+#stream { flex:1; overflow-y:auto; padding:22px 24px 8px; }
+#empty { margin-top:18vh; text-align:center; font-size:13px; color:var(--muted); }
+.msg { display:flex; align-items:flex-start; gap:10px; margin:0 0 18px; }
+.msg .avatar { width:32px; height:32px; font-size:13px; }
+.msg .body { min-width:0; max-width:min(680px, 76%); display:flex; flex-direction:column; align-items:flex-start; }
+.meta { display:flex; align-items:baseline; flex-wrap:wrap; gap:6px; margin-bottom:4px; font-size:12px; color:var(--muted); }
+.meta .who { font-size:13px; font-weight:600; color:hsl(var(--h) 60% var(--name-l)); }
+.meta .id { opacity:.7; }
+.bubble {
+  padding:9px 13px; border:1px solid var(--line); border-radius:4px 14px 14px 14px;
+  background:var(--panel); box-shadow:var(--shadow); line-height:1.6; white-space:pre-wrap; word-break:break-word;
+}
+.msg.mine { flex-direction:row-reverse; }
+.msg.mine .body { align-items:flex-end; }
+.msg.mine .meta { justify-content:flex-end; }
+.msg.mine .bubble { background:var(--accent); color:#fff; border-color:transparent; border-radius:14px 4px 14px 14px; }
+.notice { margin:2px 0 18px; text-align:center; }
+.notice span { padding:3px 12px; border-radius:999px; font-size:12px; color:var(--muted); background:var(--hover); }
+.files { display:flex; flex-direction:column; gap:6px; margin-top:6px; max-width:100%; }
+.file { display:flex; align-items:center; gap:10px; min-width:240px; max-width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:var(--panel); }
+.file .ic { font-size:18px; }
+.file .fn { flex:1; min-width:0; }
+.file a { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink); font-weight:500; text-decoration:none; }
+.file a:hover { color:var(--accent); text-decoration:underline; }
+.file .sz { font-size:11.5px; color:var(--muted); }
+.file .btn { flex-shrink:0; padding:3px 8px; font-size:12px; }
+
+/* ---- 输入区 ---- */
+#composer { flex-shrink:0; padding:10px 24px 18px; }
+.box { border:1px solid var(--line); border-radius:14px; background:var(--panel); box-shadow:var(--shadow); transition:border-color .15s, box-shadow .15s; }
+.box:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+.torow { display:flex; align-items:center; gap:10px; padding:8px 14px; border-bottom:1px solid var(--line); }
+.torow .lbl { flex-shrink:0; font-size:12px; color:var(--muted); }
+#to { flex:1; min-width:0; padding:2px 0; border:0; outline:0; background:transparent; }
+#text { display:block; width:100%; min-height:78px; max-height:40vh; padding:10px 14px; border:0; outline:0; resize:vertical; background:transparent; line-height:1.55; }
+.tools { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:4px 10px 10px; }
+.spacer { flex:1; }
+.hint { font-size:12px; color:var(--muted); }
+.primary { padding:6px 18px; border:0; border-radius:8px; background:var(--accent); color:#fff; font-weight:600; cursor:pointer; }
+.primary:hover { filter:brightness(1.08); }
+#chiprow { display:flex; flex-wrap:wrap; gap:6px; }
+.chip { display:inline-flex; align-items:center; gap:2px; padding:2px 4px 2px 10px; border:1px solid var(--line); border-radius:999px; background:var(--hover); font-size:12px; }
+.chip button { padding:0 4px; border:0; background:transparent; color:var(--muted); font-size:13px; cursor:pointer; }
+.chip button:hover { color:var(--ink); }
+
+#backdrop { display:none; }
 @media (max-width: 720px) {
-  aside { position:fixed; left:0; top:0; bottom:0; z-index:5; transform:translateX(-100%); transition:transform .2s; }
-  aside.open { transform:none; }
+  aside { position:fixed; top:0; bottom:0; left:0; z-index:20; width:min(300px, 86vw); transform:translateX(-100%); transition:transform .2s; }
+  aside.open { transform:none; box-shadow:4px 0 24px rgba(0,0,0,.25); }
+  #backdrop.show { display:block; position:fixed; inset:0; z-index:10; background:rgba(0,0,0,.35); }
   #menuBtn { display:inline-block; }
+  #convbar { padding:0 12px; }
+  #stream { padding:16px 12px 8px; }
+  #composer { padding:8px 12px 12px; }
+  .msg .body { max-width:85%; }
+  .file { min-width:0; }
+  .hint { display:none; }
 }
 </style>
 </head>
 <body>
-<aside id="side"><h1>kopitiam</h1><div id="agents"></div></aside>
+<aside id="side">
+  <div class="brand"><div class="logo">☕ kopitiam</div><div class="sub" id="brandsub">本地聊天室</div></div>
+  <div id="agents"></div>
+</aside>
+<div id="backdrop"></div>
 <main>
-  <div id="convbar"><span class="title" id="convtitle">全部消息</span><button id="showAll" class="ghost" hidden>显示全部</button></div>
-  <div id="stream"></div>
+  <div id="convbar">
+    <button id="menuBtn" class="btn" aria-label="成员列表">☰</button>
+    <div class="titles"><div id="convtitle">全部消息</div><div id="convsub">所有人之间的消息都在这里</div></div>
+    <button id="showAll" class="btn" hidden>显示全部</button>
+  </div>
+  <div id="stream"><div id="list"></div><div id="empty">还没有消息</div></div>
   <div id="composer">
-    <input id="to" placeholder="发给（逗号分隔，留空 = 所有人）">
-    <textarea id="text" placeholder="Ctrl+Enter 发送"></textarea>
-    <div class="row">
-      <button id="menuBtn" class="ghost">☰</button>
-      <input id="file" type="file" multiple hidden>
-      <button id="pick" class="ghost">📎 附件</button>
-      <span id="chiprow" class="row"></span>
-      <span style="flex:1"></span>
-      <button id="send" class="act">发送</button>
+    <div class="box">
+      <div class="torow"><span class="lbl">发给</span><input id="to" placeholder="所有人（多个名字用逗号分隔）"></div>
+      <textarea id="text" placeholder="写点什么…"></textarea>
+      <div class="tools">
+        <input id="file" type="file" multiple hidden>
+        <button id="pick" class="btn">📎 附件</button>
+        <span id="chiprow"></span>
+        <span class="spacer"></span>
+        <span class="hint">Ctrl+Enter 发送</span>
+        <button id="send" class="primary">发送</button>
+      </div>
     </div>
   </div>
 </main>
@@ -258,6 +353,7 @@ const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const $ = (id) => document.getElementById(id);
 let lastId = 0, pendingFiles = [], agentJson = "", offlineOpen = false;
 let selected = null;  // 当前对话的 agent 名字；null = 显示全部消息
+let agentsByName = {};
 const known = new Set();
 
 function api(path, opts) {
@@ -266,10 +362,27 @@ function api(path, opts) {
   return fetch(path, opts).then(r => r.json().catch(() => ({})));
 }
 
-function colorOf(name) {
+// 只用 textContent 写入文字：消息和名字都是 agent 写的，绝不用 innerHTML
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function hue(name) {
   let h = 0;
   for (const c of name) h = (h * 31 + c.codePointAt(0)) % 360;
-  return "hsl(" + h + ", 55%, 45%)";
+  return h;
+}
+
+function shown(name) { return name === "user" ? "你" : name; }
+
+function avatar(name, online) {
+  const a = el("div", "avatar", name === "user" ? "你" : [...name][0].toUpperCase());
+  a.style.setProperty("--h", hue(name));
+  if (online) a.append(el("span", "st"));
+  return a;
 }
 
 function fmtTime(iso) {
@@ -279,53 +392,56 @@ function fmtTime(iso) {
   return String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0") + " " + hm;
 }
 
+function fmtSize(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+
 function renderAgents(agents) {
+  agentsByName = Object.fromEntries(agents.map(a => [a.name, a]));
   const j = JSON.stringify(agents) + "|" + selected;
   if (j === agentJson) return;
   agentJson = j;
+  const online = agents.filter(a => a.online), offline = agents.filter(a => !a.online);
+  const n = online.filter(a => a.name !== "user").length;
+  $("brandsub").textContent = n ? n + " 个 agent 在线" : "本地聊天室 · 暂无 agent 在线";
   const box = $("agents");
   box.textContent = "";
-  const online = agents.filter(a => a.online), offline = agents.filter(a => !a.online);
+  box.append(el("div", "section", "在线 · " + online.length));
   for (const a of online) box.append(agentRow(a));
   if (offline.length) {
     // 离线的默认折叠；轮询重绘时保持用户上次的展开状态
-    const det = document.createElement("details");
-    det.className = "offline";
+    const det = el("details", "offline");
     det.open = offlineOpen;
     det.ontoggle = () => { offlineOpen = det.open; };
-    const sum = document.createElement("summary");
-    sum.textContent = "离线（" + offline.length + "）";
-    det.append(sum);
+    det.append(el("summary", "section", "离线 · " + offline.length));
     for (const a of offline) det.append(agentRow(a));
     box.append(det);
   }
+  if (selected) updateConvbar();
 }
 
 function agentRow(a) {
-  const div = document.createElement("div");
-  div.className = "agent" + (a.name === selected ? " active" : "");
+  const div = el("div", "agent" + (a.online ? "" : " off") + (a.name === selected ? " active" : ""));
   div.title = a.cwd;
-  const top = document.createElement("div"); top.className = "top";
-  const dot = document.createElement("span"); dot.className = "dot";
-  dot.textContent = a.online ? "●" : "○";
-  dot.style.color = a.online ? "#22c55e" : "var(--muted)";
-  const name = document.createElement("span"); name.className = "name"; name.textContent = a.name;
-  const kind = document.createElement("span"); kind.className = "kind"; kind.textContent = a.kind;
-  top.append(dot, name, kind);
+  const info = el("div", "info");
+  const line1 = el("div", "line1");
+  line1.append(el("span", "name", a.name));
+  if (a.name !== "user") line1.append(el("span", "kind", a.kind));
+  info.append(line1, el("div", "cwd", a.name === "user" ? "你 · 网页" : a.cwd));
+  div.append(avatar(a.name, a.online), info);
   if (a.name !== "user") {
-    const add = document.createElement("button");
-    add.className = "add"; add.textContent = "＋"; add.title = "加到「发给」（可以同时发给多个）";
+    const add = el("button", "add", "＋");
+    add.title = "加到「发给」（可以同时发给多个）";
     add.onclick = (e) => {
       e.stopPropagation();  // 只加收件人，不切换对话
       const cur = $("to").value.split(",").map(s => s.trim()).filter(Boolean);
       if (!cur.includes(a.name)) cur.push(a.name);
       $("to").value = cur.join(", ");
     };
-    top.append(add);
+    div.append(add);
   }
-  const cwd = document.createElement("div"); cwd.className = "cwd";
-  cwd.textContent = a.name === "user" ? "—" : a.cwd;
-  div.append(top, cwd);
   // 点 agent = 和它对话；再点一次（或点 user）回到全部消息
   div.onclick = () => select(a.name === "user" || a.name === selected ? null : a.name);
   return div;
@@ -336,21 +452,37 @@ function involves(m, name) {
   return m.sender === name || m.to.includes(name) || m.to.length === 0;
 }
 
-function applyFilter() {
-  for (const el of $("stream").children) {
-    el.hidden = selected !== null && !involves(el._m, selected);
-  }
+function updateEmpty() {
+  const any = [...$("list").children].some(e => !e.hidden);
+  $("empty").hidden = any;
+  $("empty").textContent = selected ? "和 " + selected + " 还没有消息" : "还没有消息";
 }
+
+function applyFilter() {
+  for (const e of $("list").children) e.hidden = selected !== null && !involves(e._m, selected);
+  updateEmpty();
+}
+
+function updateConvbar() {
+  const a = selected && agentsByName[selected];
+  $("convtitle").textContent = selected ? "与 " + selected + " 的对话" : "全部消息";
+  $("convsub").textContent = selected
+    ? (a ? a.kind + " · " + (a.online ? "在线" : "离线") + " · " + a.cwd : "")
+    : "所有人之间的消息都在这里";
+  $("showAll").hidden = !selected;
+}
+
+function closeSide() { $("side").classList.remove("open"); $("backdrop").classList.remove("show"); }
 
 function select(name) {
   selected = name;
-  $("convtitle").textContent = name ? "与 " + name + " 的对话" : "全部消息";
-  $("showAll").hidden = !name;
+  updateConvbar();
   $("to").value = name || "";
   agentJson = "";  // 强制重绘左栏，更新高亮
   poll();
   applyFilter();
-  const el = $("stream"); el.scrollTop = el.scrollHeight;
+  closeSide();
+  const s = $("stream"); s.scrollTop = s.scrollHeight;
   $("text").focus();
 }
 
@@ -358,47 +490,67 @@ function addMessage(m) {
   if (known.has(m.id)) return;
   known.add(m.id);
   if (m.id > lastId) lastId = m.id;  // 下次轮询只要更新的消息
-  const div = document.createElement("div");
+  const mine = m.sender === "user";
+  let div;
+  if (/^（.+ 改名为 .+）$/.test(m.text) && !m.files.length) {
+    div = el("div", "notice");  // 改名通知：居中灰色小字
+    div.append(el("span", "", m.text.slice(1, -1)));
+  } else {
+    div = el("div", "msg" + (mine ? " mine" : ""));
+    if (!mine) div.append(avatar(m.sender, false));
+    const body = el("div", "body");
+    const meta = el("div", "meta");
+    const who = el("span", "who", shown(m.sender));
+    who.style.setProperty("--h", hue(m.sender));
+    meta.append(who, el("span", "", "→ " + (m.to.length ? m.to.map(shown).join("、") : "所有人")),
+                el("span", "", fmtTime(m.time)), el("span", "id", "#" + m.id));
+    body.append(meta);
+    if (m.text) body.append(el("div", "bubble", m.text));
+    if ((m.files || []).length) {
+      const files = el("div", "files");
+      for (const f of m.files) {
+        const card = el("div", "file");
+        const fn = el("div", "fn");
+        const a = el("a", "", f.name);
+        a.href = f.url; a.target = "_blank"; a.title = f.path;
+        fn.append(a, el("div", "sz", fmtSize(f.size)));
+        const btn = el("button", "btn", "复制路径");
+        btn.onclick = () => navigator.clipboard.writeText(f.path).then(() => {
+          btn.textContent = "已复制"; setTimeout(() => { btn.textContent = "复制路径"; }, 1200);
+        });
+        card.append(el("span", "ic", "📄"), fn, btn);
+        files.append(card);
+      }
+      body.append(files);
+    }
+    div.append(body);
+  }
   div._m = m;
   div.hidden = selected !== null && !involves(m, selected);
-  div.className = "msg" + (m.sender === "user" ? " mine" : "");
-  const meta = document.createElement("div"); meta.className = "meta";
-  meta.textContent = "#" + m.id + " " + fmtTime(m.time) + " " + m.sender + " → " + (m.to.length ? m.to.join("、") : "所有人");
-  meta.style.color = colorOf(m.sender);
-  const bubble = document.createElement("div"); bubble.className = "bubble";
-  bubble.textContent = m.text;  // 消息是 agent 写的，绝不用 innerHTML 插内容
-  div.append(meta, bubble);
-  for (const f of (m.files || [])) {
-    const line = document.createElement("div"); line.className = "fileline";
-    const a = document.createElement("a");
-    a.href = f.url; a.textContent = "📎 " + f.name; a.target = "_blank";
-    const btn = document.createElement("button");
-    btn.textContent = "复制路径";
-    btn.onclick = () => navigator.clipboard.writeText(f.path);
-    line.append(a, btn);
-    div.append(line);
-  }
-  $("stream").append(div);
+  $("list").append(div);
 }
 
 async function poll() {
   let st;
   try { st = await api("/api/state?after=" + lastId); } catch (e) { return; }
-  const el = $("stream");
-  const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+  const s = $("stream");
+  const atBottom = s.scrollTop + s.clientHeight >= s.scrollHeight - 40;
   for (const m of (st.messages || [])) addMessage(m);
   renderAgents(st.agents || []);
-  if ((st.messages || []).length && atBottom) el.scrollTop = el.scrollHeight;
+  updateEmpty();
+  if ((st.messages || []).length && atBottom) s.scrollTop = s.scrollHeight;
 }
 
 function renderChips() {
   const row = $("chiprow");
   row.textContent = "";
   pendingFiles.forEach((f, i) => {
-    const chip = document.createElement("span"); chip.className = "chip";
-    chip.textContent = f.name + " ✕";
+    const chip = el("span", "chip", "📎 " + f.name);
     chip.title = f.path;
-    chip.onclick = () => { pendingFiles.splice(i, 1); renderChips(); };
+    const x = el("button", "", "✕");
+    x.title = "移除";
+    x.onclick = () => { pendingFiles.splice(i, 1); renderChips(); };
+    chip.append(x);
     row.append(chip);
   });
 }
@@ -433,7 +585,8 @@ $("showAll").onclick = () => select(null);
 $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.ctrlKey) send(); });
 $("pick").onclick = () => $("file").click();
 $("file").onchange = (e) => { upload([...e.target.files]); e.target.value = ""; };
-$("menuBtn").onclick = () => $("side").classList.toggle("open");
+$("menuBtn").onclick = () => { $("side").classList.add("open"); $("backdrop").classList.add("show"); };
+$("backdrop").onclick = closeSide;
 poll();
 setInterval(poll, 1500);
 </script>
