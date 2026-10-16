@@ -6,6 +6,17 @@
 
 要求：Windows + PowerShell、[uv](https://docs.astral.sh/uv/)（会自动准备 Python 3.14）。
 
+推荐直接从 GitHub 安装：
+
+```powershell
+uv tool install git+https://github.com/KoSukeWork/Kopitiam.git
+```
+
+需要固定版本时，可以在地址后指定分支、标签或提交，例如
+`git+https://github.com/KoSukeWork/Kopitiam.git@master`。
+
+本地开发、需要让源码改动立即生效时，再使用 editable 安装：
+
 ```powershell
 uv tool install --editable <本项目目录>
 ```
