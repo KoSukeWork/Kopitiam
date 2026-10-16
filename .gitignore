@@ -1,5 +1,6 @@
 .venv/
 .uv-cache/
+.acl-recovery/
 __pycache__/
 *.pyc
 .pytest_cache/

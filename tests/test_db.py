@@ -11,11 +11,10 @@ def test_norm_ignores_case_and_slash_direction():
     assert config.norm("e:\\proj\\X") == config.norm("E:\\Proj\\x")
 
 
-def test_data_dir_follows_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("AGENT_CHAT_HOME", str(tmp_path))
-    assert config.data_dir() == Path(tmp_path)
-    assert config.files_dir() == Path(tmp_path) / "files"
-    assert config.db_path() == Path(tmp_path) / "chat.db"
+def test_data_dir_follows_env(home, monkeypatch):
+    assert config.data_dir() == Path(home)
+    assert config.files_dir() == Path(home) / "files"
+    assert config.db_path() == Path(home) / "chat.db"
 
 
 def test_data_dir_defaults_to_home(monkeypatch):
@@ -24,7 +23,7 @@ def test_data_dir_defaults_to_home(monkeypatch):
 
 
 def test_safe_replaces_bad_chars():
-    assert config.safe('a<b>:"/\\|?*.txt') == "a_________.txt"
+    assert config.safe('a<b>:"/\\|?*.txt') == "a_b________.txt"
     assert config.safe("计划\n.md") == "计划_.md"  # 控制字符也换掉
 
 

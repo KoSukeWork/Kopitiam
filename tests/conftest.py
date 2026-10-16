@@ -1,14 +1,26 @@
 """所有测试共用：把数据目录指到临时目录，绝不碰真实的 ~/.agent-chat。
 
-config.py 在函数里读取 AGENT_CHAT_HOME，所以 monkeypatch.setenv 之前之后都无所谓，
-只要在第一次调用 data_dir() 之前设置好即可。
+# NOTE: 不用 pytest 自带的 tmp_path fixture——本机 DSH 沙箱下子进程的目录 scandir/
+# mkdir 行为不可靠，pytest 的 tmp_path 工厂会因此挂掉；这里直接在系统临时目录里建
+# 唯一子目录，行为等价且稳定。
 """
 from __future__ import annotations
+
+import os
+import shutil
+import tempfile
+import uuid
+from pathlib import Path
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def _home(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENT_CHAT_HOME", str(tmp_path / "agent-chat-home"))
-    yield
+def home(monkeypatch):
+    """每个测试一个独立的 AGENT_CHAT_HOME（函数里读环境变量，随时生效）。"""
+    root = Path(tempfile.gettempdir()) / f"agent-chat-test-{uuid.uuid4().hex[:10]}"
+    root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AGENT_CHAT_HOME", str(root))
+    yield root
+    monkeypatch.delenv("AGENT_CHAT_HOME", raising=False)
+    shutil.rmtree(root, ignore_errors=True)
