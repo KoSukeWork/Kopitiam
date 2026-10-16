@@ -300,6 +300,7 @@ function renderAgents(agents) {
 function addMessage(m) {
   if (known.has(m.id)) return;
   known.add(m.id);
+  if (m.id > lastId) lastId = m.id;  // 下次轮询只要更新的消息
   const div = document.createElement("div");
   div.className = "msg" + (m.sender === "user" ? " mine" : "");
   const meta = document.createElement("div"); meta.className = "meta";

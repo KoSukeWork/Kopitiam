@@ -58,23 +58,25 @@ def kind_for(path: Path, default_kind: str) -> str:
         return "dsh"
     try:
         with path.open(encoding="utf-8", errors="replace") as f:
-            first = f.readline()
+            head = [f.readline() for _ in range(50)]
     except OSError:
         return default_kind
-    try:
-        obj = json.loads(first)
-    except ValueError:
-        return default_kind
-    if not isinstance(obj, dict):
-        return default_kind
-    t = obj.get("type")
-    if t == "session_meta":
-        return "codex"
-    if t == "session":
-        # NOTE: pi 和 dsh 的 session 行没有绝对可靠的区分字段，按 createdAt 猜（dsh 有毫秒时间戳）
-        return "dsh" if "createdAt" in obj else "pi"
-    if t in ("user", "assistant"):
-        return "claude"
+    for i, line in enumerate(head):
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        t = obj.get("type")
+        if i == 0 and t == "session_meta":
+            return "codex"
+        if i == 0 and t == "session":
+            # NOTE: pi 和 dsh 的 session 行没有绝对可靠的区分字段，按 createdAt 猜（dsh 有毫秒时间戳）
+            return "dsh" if "createdAt" in obj else "pi"
+        # claude 的第一行通常是 mode / file-history-snapshot 等，要往后找 user/assistant 行
+        if t in ("user", "assistant"):
+            return "claude"
     return default_kind
 
 
@@ -147,7 +149,11 @@ def _inner(ev: Event, mode: str) -> str:
     if ev.kind == "note":
         return _quote("📝", ev.text)
     if ev.kind == "tool_call":
-        return f"> 🔧 **{ev.name or '工具'}** `{ev.text}`"
+        head = f"> 🔧 **{ev.name or '工具'}**"
+        if "\n" in ev.text or "`" in ev.text:
+            # 多行或带反引号的参数（如 codex exec 的脚本）放不进行内代码，改用围栏代码块
+            return f"{head}\n\n{_fence(ev.text)}\n{ev.text}\n{_fence(ev.text)}"
+        return f"{head} `{ev.text}`"
     if ev.kind == "tool_result":
         name = ev.name or "工具"
         return (
@@ -173,7 +179,7 @@ def render_body(events: list[Event], mode: str) -> str:
             run.append(events[i])
             i += 1
         head = f"## 🤖 助手 · {_hhmm(run[0].time)}" if run[0].time else "## 🤖 助手"
-        inners = [_inner(e, mode) for e in run if _inner(e, mode)]
+        inners = [s for s in (_inner(e, mode) for e in run) if s]
         parts.append(head + "\n" + "\n\n".join(inners))
     return "\n\n".join(parts)
 
@@ -251,15 +257,17 @@ def export_context(kind: str, cwd: str, agent_name: str, mode: str = "clean",
     """导出成 Markdown 文件，返回 (输出路径, stats)。stats: 轮数 / 字节数 / 来源文件名。"""
     if mode not in TRUNC:
         raise ExportError(f"未知模式：{mode}（clean / full）")
-    parser = PARSERS.get(kind)
-    if parser is None:
-        raise ExportError(f"未知 agent 类型：{kind}")
     if session_file:
         path = Path(session_file)
         if not path.is_file():
             raise ExportError(f"找不到文件：{session_file}")
         used = kind_for(path, kind)
+        if used not in PARSERS:
+            raise ExportError(f"判断不出 {path.name} 是哪种 agent 的记录（当前类型 {kind}）")
     else:
+        parser = PARSERS.get(kind)
+        if parser is None:
+            raise ExportError(f"未知 agent 类型：{kind}。请用 session_file 直接指定记录文件。")
         path = parser.find_session(cwd)
         if path is None:
             raise ExportError(

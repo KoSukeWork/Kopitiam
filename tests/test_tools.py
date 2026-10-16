@@ -175,3 +175,14 @@ def test_set_cwd_requires_existing_dir(home, chat, agents):
     out = chat.set_cwd(a, str(home))
     assert out.startswith("已设置工作目录")
     assert str(home) in chat.whoami(a)
+
+
+def test_messages_after_initial_latest_then_catch_up(home, chat, agents):
+    a, _, _ = agents
+    for i in range(5):
+        chat.send(a, f"m{i}")
+    # 首次加载（after=0）取最新的 limit 条
+    assert [m["id"] for m in chat.messages_after(0, 2)] == [4, 5]
+    # 之后按升序补，不会跳过中间的消息
+    assert [m["id"] for m in chat.messages_after(1, 2)] == [2, 3]
+    assert [m["id"] for m in chat.messages_after(3, 2)] == [4, 5]

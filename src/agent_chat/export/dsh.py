@@ -17,7 +17,26 @@ PATTERN = "*/*/session*.jsonl.zstd"
 
 
 def _text(path: Path) -> str:
-    return zstd.decompress(path.read_bytes()).decode("utf-8", "replace")
+    """逐帧解压。dsh 正在写入的会话最后一帧可能不完整：保留已解出的部分，
+    并丢掉最后一行可能被截断的半行，而不是整个文件解压失败。"""
+    data = path.read_bytes()
+    out: list[bytes] = []
+    truncated = False
+    while data:
+        d = zstd.ZstdDecompressor()
+        try:
+            out.append(d.decompress(data))
+        except zstd.ZstdError:
+            truncated = True
+            break
+        if not d.eof:
+            truncated = True
+            break
+        data = d.unused_data
+    text = b"".join(out).decode("utf-8", "replace")
+    if truncated and not text.endswith("\n"):
+        text = text.rpartition("\n")[0]
+    return text
 
 
 def find_session(cwd: str, home: Path | None = None) -> Path | None:

@@ -352,3 +352,40 @@ def test_export_context_session_file(home):
                                 session_file=str(FIX / "claude.jsonl"))
     assert stats["source"] == "claude.jsonl"  # 跳过查找直接用指定文件
     assert "帮我看下登录" in out.read_text(encoding="utf-8")
+
+
+# ---- 回归：真实记录里发现的问题 ----
+
+
+def test_dsh_truncated_last_frame_keeps_earlier_frames(home):
+    # dsh 正在写入时最后一帧可能不完整：前面的帧要照常解析，find_session 也要能找到
+    lines = (FIX / "dsh.jsonl").read_text(encoding="utf-8").splitlines(keepends=True)
+    head, tail = "".join(lines[:2]), "".join(lines[2:])
+    p = home / ".dsh/sessions/a/b/session-1.jsonl.zstd"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    whole = zstd.compress(tail.encode("utf-8"))
+    p.write_bytes(zstd.compress(head.encode("utf-8")) + whole[: len(whole) // 2])
+    assert xdsh.find_session("E:\\Proj", home=home) == p
+    events = xdsh.parse(p)
+    assert events and events[0].text == "看下地面材质"
+
+
+def test_render_multiline_tool_call_uses_fence():
+    script = "const r = await tools.x();\ntext(r);"
+    md, _ = render([Event("user", "q"), Event("tool_call", script, name="exec")], "clean", _header())
+    assert "> 🔧 **exec**\n\n```\n" + script + "\n```" in md
+
+
+def test_kind_for_claude_first_line_not_user(home):
+    c = home / "c.jsonl"
+    c.write_text('{"type":"mode","mode":"default"}\n{"type":"user","message":{"content":"hi"}}\n',
+                 encoding="utf-8")
+    assert kind_for(c, "codex") == "claude"
+
+
+def test_export_context_generic_agent_with_session_file(home):
+    out, _ = export_context("agent", "E:\\Proj", "x", session_file=str(FIX / "claude.jsonl"))
+    assert "帮我看下登录" in out.read_text(encoding="utf-8")
+    with pytest.raises(ExportError) as ei:
+        export_context("agent", "E:\\Proj", "x")
+    assert "session_file" in str(ei.value)

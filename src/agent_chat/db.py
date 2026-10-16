@@ -630,18 +630,22 @@ class Chat:
 
     def messages_after(self, after: int, limit: int = 200) -> list[dict]:
         """user 能看到所有消息（包括 agent 之间互发的）。"""
+        # 首次加载（after=0）取最新的 limit 条；之后按升序取，超过 limit 的下次轮询再补，不会漏
+        order = "DESC" if after <= 0 else "ASC"
         with _conn() as c:
             rows = c.execute(
-                "SELECT * FROM messages WHERE id > ? ORDER BY id DESC LIMIT ?",
+                f"SELECT * FROM messages WHERE id > ? ORDER BY id {order} LIMIT ?",
                 (after, limit),
             ).fetchall()
+            if order == "DESC":
+                rows.reverse()
             names = {r["id"]: r["name"] for r in c.execute("SELECT id, name FROM agents")}
             kinds = {r["id"]: r["kind"] for r in c.execute("SELECT id, kind FROM agents")}
             atts: dict[int, list[sqlite3.Row]] = {}
             for r in c.execute("SELECT * FROM attachments ORDER BY id"):
                 atts.setdefault(r["message_id"], []).append(r)
         out = []
-        for m in reversed(rows):  # 恢复成 id 升序
+        for m in rows:
             out.append({
                 "id": m["id"],
                 "time": m["created_at"],
