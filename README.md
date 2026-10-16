@@ -52,22 +52,32 @@ startup_timeout_sec = 30
 ```json
 "kopitiam": {
   "command": "C:\\Users\\admin\\.local\\bin\\kopitiam.exe",
-  "args": ["mcp", "--kind", "pi"]
+  "args": ["mcp", "--kind", "pi"],
+  "exposure": "direct"
 }
 ```
 
-**dsh**（`~/.dsh/profiles/<web 或 desktop>/cordis.patch.yml` 末尾加一项；stdio 字段名以 `@deepseek-ai/dsh-mcp-client` 官方 README 为准）：
+**dsh**（`~/.dsh/profiles/<web 或 desktop>/cordis.patch.yml` 末尾加一项，用哪个 profile 就加到哪个）：
 
 ```yaml
-- id: kopitiam
-  name: '@deepseek-ai/dsh-mcp-client'
-  config:
-    serverName: kopitiam
-    transport: stdio
-    command: 'C:\Users\admin\.local\bin\kopitiam.exe'
-    args: ["mcp", "--kind", "dsh"]
-    failOnStartupError: false
+- insert:
+    - id: kopitiam
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: kopitiam
+        transport: stdio
+        command: 'C:\Users\admin\.local\bin\kopitiam.exe'
+        args: ["mcp", "--kind", "dsh", "--name", "dsh"]
+        failOnStartupError: false
 ```
+
+> - **必须用 `- insert:` 包起来。** patch 文件里直接写 `- id: xxx` 的意思是"修改已有的 xxx 条目"，找不到就跳过，只在启动时打一行 `entry "xxx" not found` 警告。
+> - 改完用 `dsh web --dump-config` 检查：没有 `not found` 警告，并且输出末尾能看到 `serverName: kopitiam`，就说明加载上了。
+> - 加 `--name dsh` 的原因和 Codex 一样：dsh 网页版的 MCP 启动目录不跟着工作区走，导出前要先 `set_cwd`。
+
+**pi**：`pi mcp list` 应显示 `kopitiam: connected, 8 tools (direct, global)`。`mcp.json` 里给 kopitiam 加上 `"exposure": "direct"`，模型就能直接看到工具；默认的 `codemode` 方式要先写脚本搜索才能找到。
+
+**Codex**：`codex mcp list` 里 kopitiam 应为 `enabled`。
 
 **给 agent 的使用说明**（可选，加到 `~/.claude/CLAUDE.md`、`~/.codex/AGENTS.md` 等全局指令文件）：
 
