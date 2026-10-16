@@ -71,8 +71,23 @@ startup_timeout_sec = 30
         failOnStartupError: false
 ```
 
-> - **必须用 `- insert:` 包起来。** patch 文件里直接写 `- id: xxx` 的意思是"修改已有的 xxx 条目"，找不到就跳过，只在启动时打一行 `entry "xxx" not found` 警告。
-> - 改完用 `dsh web --dump-config` 检查：没有 `not found` 警告，并且输出末尾能看到 `serverName: kopitiam`，就说明加载上了。
+> - **必须用 `- insert:` 包起来。** patch 文件里直接写 `- id: xxx` 的意思是"修改已有的 xxx 条目"，找不到就跳过，只在启动时打一行 `entry "xxx" not found` 警告。**所有新加的 MCP 都一样**，不只是 kopitiam。
+> - 有多个 MCP 时，放进同一个 `insert` 列表就行，例如：
+>
+>   ```yaml
+>   - insert:
+>       - id: unreal-mcp
+>         name: '@deepseek-ai/dsh-mcp-client'
+>         config:
+>           serverName: unreal-mcp
+>           transport: streamable-http
+>           url: http://127.0.0.1:8000/mcp
+>           failOnStartupError: false
+>       - id: kopitiam
+>         # ……同上
+>   ```
+>
+> - 改完用 `dsh web --dump-config 2>&1 | Select-String 'not found|serverName'` 检查：没有 `not found`，并且每个 MCP 都有一行 `serverName: …`，就说明都加载上了。
 > - 加 `--name dsh` 的原因和 Codex 一样：dsh 网页版的 MCP 启动目录不跟着工作区走，导出前要先 `set_cwd`。
 
 **pi**：`pi mcp list` 应显示 `kopitiam: connected, 8 tools (direct, global)`。`mcp.json` 里给 kopitiam 加上 `"exposure": "direct"`，模型就能直接看到工具；默认的 `codemode` 方式要先写脚本搜索才能找到。
