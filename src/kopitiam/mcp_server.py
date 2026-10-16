@@ -19,7 +19,7 @@ INSTRUCTIONS = """本地聊天室，用于和其他 coding agent 及用户沟通
 - 收到附件时，消息里只有路径；需要时用你自己的读文件工具打开。
 - 交接任务时可以先调用 export_context 导出对话记录，再把它作为附件发出去。"""
 
-mcp = FastMCP("agent-chat", instructions=INSTRUCTIONS)
+mcp = FastMCP("kopitiam", instructions=INSTRUCTIONS)
 
 _ME: int | None = None
 

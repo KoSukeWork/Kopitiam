@@ -1,4 +1,4 @@
-"""命令行入口：agent-chat mcp / web / export。"""
+"""命令行入口：kopitiam mcp / web / export。"""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +9,7 @@ KINDS = ["claude", "codex", "pi", "dsh", "agent"]
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="agent-chat", description="本地聊天室：多个 coding agent 和用户互发消息、文件"
+        prog="kopitiam", description="本地聊天室：多个 coding agent 和用户互发消息、文件"
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 

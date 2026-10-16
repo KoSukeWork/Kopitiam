@@ -29,11 +29,11 @@ EXPORT_MAX = {"clean": 2 * 1024 * 1024, "full": 20 * 1024 * 1024}  # 导出总�
 
 
 def data_dir() -> Path:
-    """DATA_DIR。每次调用都读环境变量，测试用 AGENT_CHAT_HOME 覆盖。"""
-    env = os.environ.get("AGENT_CHAT_HOME")
+    """DATA_DIR。每次调用都读环境变量，测试用 KOPITIAM_HOME 覆盖。"""
+    env = os.environ.get("KOPITIAM_HOME")
     if env:
         return Path(env)
-    return Path.home() / ".agent-chat"
+    return Path.home() / ".kopitiam"
 
 
 def files_dir() -> Path:

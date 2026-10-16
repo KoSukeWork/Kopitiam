@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chat import config, db
+from kopitiam import config, db
 
 
 def test_norm_ignores_case_and_slash_direction():
@@ -23,8 +23,8 @@ def test_data_dir_follows_env(home, monkeypatch):
 
 
 def test_data_dir_defaults_to_home(monkeypatch):
-    monkeypatch.delenv("AGENT_CHAT_HOME", raising=False)
-    assert config.data_dir() == Path.home() / ".agent-chat"
+    monkeypatch.delenv("KOPITIAM_HOME", raising=False)
+    assert config.data_dir() == Path.home() / ".kopitiam"
 
 
 def test_safe_replaces_bad_chars():
@@ -96,7 +96,7 @@ def test_two_online_agents_distinct_pids(home):
 
 
 def _row(pid):
-    from agent_chat.db import _conn
+    from kopitiam.db import _conn
 
     with _conn() as c:
         return c.execute("SELECT * FROM agents WHERE pid=?", (pid,)).fetchone()

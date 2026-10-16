@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from compression import zstd
 
-from agent_chat.export import (
+from kopitiam.export import (
     ExportError,
     Event,
     export_context,
@@ -19,10 +19,10 @@ from agent_chat.export import (
     render,
     truncate_events,
 )
-from agent_chat.export import claude as xclaude
-from agent_chat.export import codex as xcodex
-from agent_chat.export import dsh as xdsh
-from agent_chat.export import pi as xpi
+from kopitiam.export import claude as xclaude
+from kopitiam.export import codex as xcodex
+from kopitiam.export import dsh as xdsh
+from kopitiam.export import pi as xpi
 
 FIX = Path(__file__).parent / "fixtures"
 

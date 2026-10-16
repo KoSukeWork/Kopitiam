@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chat import config, db
+from kopitiam import config, db
 
 
 @pytest.fixture()

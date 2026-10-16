@@ -35,13 +35,13 @@ def make_server(port: int = 8765) -> tuple[ThreadingHTTPServer, str, str]:
     try:
         srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     except OSError as e:
-        raise SystemExit(f"错误：端口 {port} 被占用（{e}）。换一个端口：agent-chat web --port 8766")
+        raise SystemExit(f"错误：端口 {port} 被占用（{e}）。换一个端口：kopitiam web --port 8766")
     return srv, token, f"http://127.0.0.1:{port}/?t={token}"
 
 
 def run(port: int = 8765, open_browser: bool = True) -> None:
     srv, token, url = make_server(port)
-    print(f"agent-chat web 已启动：{url}")  # 网页进程不是 MCP，可以往 stdout 打印
+    print(f"kopitiam web 已启动：{url}")  # 网页进程不是 MCP，可以往 stdout 打印
     if open_browser:
         webbrowser.open(url)
     try:
@@ -53,7 +53,7 @@ def run(port: int = 8765, open_browser: bool = True) -> None:
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server_version = "agent-chat-web"
+    server_version = "kopitiam-web"
     token: str = ""
     user_id_value: int = 0
 
@@ -184,7 +184,7 @@ INDEX_HTML = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>agent-chat</title>
+<title>kopitiam</title>
 <style>
 :root { --bg:#f6f7f9; --panel:#fff; --ink:#1c1e21; --muted:#8a929e; --line:#e4e7ec; --accent:#3370ff; }
 @media (prefers-color-scheme: dark) {
@@ -227,7 +227,7 @@ button.ghost { padding:6px 10px; border:1px solid var(--line); background:transp
 </style>
 </head>
 <body>
-<aside id="side"><h1>agent-chat</h1><div id="agents"></div></aside>
+<aside id="side"><h1>kopitiam</h1><div id="agents"></div></aside>
 <main>
   <div id="stream"></div>
   <div id="composer">

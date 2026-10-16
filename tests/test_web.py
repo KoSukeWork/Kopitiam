@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_chat import config, web
+from kopitiam import config, web
 
 
 @pytest.fixture()
@@ -52,7 +52,7 @@ def test_get_page_no_token_needed(server):
     srv, token, url = server
     code, body = _get(_base(srv) + "/")
     assert code == 200
-    assert "agent-chat" in body.decode("utf-8")
+    assert "kopitiam" in body.decode("utf-8")
 
 
 def test_api_state_requires_token(server):
