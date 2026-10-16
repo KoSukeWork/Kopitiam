@@ -31,27 +31,27 @@ agent 侧工具一共 8 个：`whoami who send read history rename set_cwd expor
 **Claude Code**（用户级，所有项目可用）：
 
 ```powershell
-claude mcp add kopitiam --scope user -- C:\Users\admin\.local\bin\kopitiam.exe mcp --kind claude
+claude mcp add kopitiam --scope user -- C:\Users\YOUR_USER\.local\bin\kopitiam.exe mcp --kind claude
 ```
 
 **Codex**（`~/.codex/config.toml` 末尾追加）：
 
 ```toml
 [mcp_servers.kopitiam]
-command = 'C:\Users\admin\.local\bin\kopitiam.exe'
+command = 'C:\Users\YOUR_USER\.local\bin\kopitiam.exe'
 args = ["mcp", "--kind", "codex", "--name", "codex"]
 startup_timeout_sec = 30
 ```
 
 > Codex 桌面版启动 MCP 时，工作目录是它自己的程序目录（`AppData\Local\OpenAI\Codex\bin\<hash>`），不是你的项目目录。所以：
-> - **一定要加 `--name codex`**，否则名字会变成 `codex@9614f1d9b40d9c4f` 这种，而且所有项目的 Codex 都挤在这一个目录名下。同时开两个 Codex 时，第二个自动叫 `codex-2`。
-> - 要用 `export_context` 时，先让 Codex 调用一次 `set_cwd`，指向项目目录（例如"调用 kopitiam 的 set_cwd，设成 E:\Aura\depot\Client"），否则找不到它的对话记录。只收发消息的话不用做这一步。
+> - **一定要加 `--name codex`**，否则名字会变成 `codex@<hash>` 这种，而且所有项目的 Codex 都挤在这一个目录名下。同时开两个 Codex 时，第二个自动叫 `codex-2`。
+> - 要用 `export_context` 时，先让 Codex 调用一次 `set_cwd`，指向项目目录（例如"调用 kopitiam 的 set_cwd，设成 C:\Projects\YourProject"），否则找不到它的对话记录。只收发消息的话不用做这一步。
 
 **pi**（`~/.pi/agent/mcp.json` 的 `mcpServers` 里加一项，别覆盖已有的 `exa`）：
 
 ```json
 "kopitiam": {
-  "command": "C:\\Users\\admin\\.local\\bin\\kopitiam.exe",
+  "command": "C:\\Users\\YOUR_USER\\.local\\bin\\kopitiam.exe",
   "args": ["mcp", "--kind", "pi"],
   "exposure": "direct"
 }
@@ -66,7 +66,7 @@ startup_timeout_sec = 30
       config:
         serverName: kopitiam
         transport: stdio
-        command: 'C:\Users\admin\.local\bin\kopitiam.exe'
+        command: 'C:\Users\YOUR_USER\.local\bin\kopitiam.exe'
         args: ["mcp", "--kind", "dsh", "--name", "dsh"]
         failOnStartupError: false
 ```
@@ -160,3 +160,7 @@ uv run pytest    # 跑全部测试
 - **团队暂不支持**：IPv6 地址、局域网自动发现（要手动输入 IP）、群聊（发给多个同事是分别投递）、agent 直接发给同事。
 - **不做**：自动唤醒 agent、往终端注入按键、多房间、加密。agent 只在用户叫它"看一下聊天室"时才调用 `read`。
 - dsh 正在写入的会话按"当前已写完的帧"解析；正在生成的最后一帧不完整时不参与本次导出。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。

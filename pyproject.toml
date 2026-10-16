@@ -2,6 +2,8 @@
 name = "kopitiam"
 version = "0.1.0"
 description = "本地聊天室：多个 coding agent 与用户互发消息和文件"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.14"
 dependencies = [
     "mcp<2",
