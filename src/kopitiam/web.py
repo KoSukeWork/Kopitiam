@@ -195,6 +195,9 @@ body { margin:0; font-family: system-ui, "Microsoft YaHei", sans-serif; backgrou
 aside { width:260px; min-width:220px; background:var(--panel); border-right:1px solid var(--line); overflow-y:auto; padding:12px; }
 aside h1 { font-size:14px; margin:4px 0 10px; color:var(--muted); }
 .agent { padding:8px 10px; border-radius:8px; cursor:pointer; }
+details.offline { margin-top:10px; border-top:1px solid var(--line); padding-top:6px; }
+details.offline summary { cursor:pointer; color:var(--muted); font-size:12px; padding:4px 10px; user-select:none; }
+details.offline .agent { opacity:.7; }
 .agent:hover { background:var(--bg); }
 .agent .top { display:flex; align-items:baseline; }
 .agent .name { font-weight:600; }
@@ -246,7 +249,7 @@ button.ghost { padding:6px 10px; border:1px solid var(--line); background:transp
 <script>
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const $ = (id) => document.getElementById(id);
-let lastId = 0, pendingFiles = [], agentJson = "";
+let lastId = 0, pendingFiles = [], agentJson = "", offlineOpen = false;
 const known = new Set();
 
 function api(path, opts) {
@@ -274,27 +277,42 @@ function renderAgents(agents) {
   agentJson = j;
   const box = $("agents");
   box.textContent = "";
-  for (const a of agents) {
-    const div = document.createElement("div");
-    div.className = "agent";
-    div.title = a.cwd;
-    const top = document.createElement("div"); top.className = "top";
-    const dot = document.createElement("span"); dot.className = "dot";
-    dot.textContent = a.online ? "●" : "○";
-    dot.style.color = a.online ? "#22c55e" : "var(--muted)";
-    const name = document.createElement("span"); name.className = "name"; name.textContent = a.name;
-    const kind = document.createElement("span"); kind.className = "kind"; kind.textContent = a.kind;
-    top.append(dot, name, kind);
-    const cwd = document.createElement("div"); cwd.className = "cwd";
-    cwd.textContent = a.name === "user" ? "—" : a.cwd;
-    div.append(top, cwd);
-    div.onclick = () => {  // 点名字加进"发给"框
-      const cur = $("to").value.split(",").map(s => s.trim()).filter(Boolean);
-      if (!cur.includes(a.name) && a.name !== "user") cur.push(a.name);
-      $("to").value = cur.join(", ");
-    };
-    box.append(div);
+  const online = agents.filter(a => a.online), offline = agents.filter(a => !a.online);
+  for (const a of online) box.append(agentRow(a));
+  if (offline.length) {
+    // 离线的默认折叠；轮询重绘时保持用户上次的展开状态
+    const det = document.createElement("details");
+    det.className = "offline";
+    det.open = offlineOpen;
+    det.ontoggle = () => { offlineOpen = det.open; };
+    const sum = document.createElement("summary");
+    sum.textContent = "离线（" + offline.length + "）";
+    det.append(sum);
+    for (const a of offline) det.append(agentRow(a));
+    box.append(det);
   }
+}
+
+function agentRow(a) {
+  const div = document.createElement("div");
+  div.className = "agent";
+  div.title = a.cwd;
+  const top = document.createElement("div"); top.className = "top";
+  const dot = document.createElement("span"); dot.className = "dot";
+  dot.textContent = a.online ? "●" : "○";
+  dot.style.color = a.online ? "#22c55e" : "var(--muted)";
+  const name = document.createElement("span"); name.className = "name"; name.textContent = a.name;
+  const kind = document.createElement("span"); kind.className = "kind"; kind.textContent = a.kind;
+  top.append(dot, name, kind);
+  const cwd = document.createElement("div"); cwd.className = "cwd";
+  cwd.textContent = a.name === "user" ? "—" : a.cwd;
+  div.append(top, cwd);
+  div.onclick = () => {  // 点名字加进"发给"框
+    const cur = $("to").value.split(",").map(s => s.trim()).filter(Boolean);
+    if (!cur.includes(a.name) && a.name !== "user") cur.push(a.name);
+    $("to").value = cur.join(", ");
+  };
+  return div;
 }
 
 function addMessage(m) {
