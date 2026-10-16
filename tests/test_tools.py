@@ -186,3 +186,75 @@ def test_messages_after_initial_latest_then_catch_up(home, chat, agents):
     # 之后按升序补，不会跳过中间的消息
     assert [m["id"] for m in chat.messages_after(1, 2)] == [2, 3]
     assert [m["id"] for m in chat.messages_after(3, 2)] == [4, 5]
+
+
+# ---- 隐藏 / 自动清理 / 手动删除 / 按 agent 取历史 ----
+
+
+def _age(name: str, days: int) -> None:
+    """把某个身份变成离线、并且 days 天前最后出现。"""
+    from datetime import datetime, timedelta
+
+    old = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    with db._conn() as c:
+        c.execute("UPDATE agents SET last_seen=?, pid=NULL, pid_ctime=NULL WHERE name=?", (old, name))
+
+
+def test_purge_stale_only_removes_old_agents_without_messages(home, chat, agents):
+    a, b, c = agents
+    chat.send(a, "hi", to=["B"])  # A 发过、B 收到过：都有消息关联
+    for n in ("A", "B", "C"):
+        _age(n, 40)
+    d = db.claim("dsh", cwd=str(home), name="D", pid=os.getpid())
+    db.release(d)  # D 没消息，但最近还出现过
+    assert db.purge_stale() == 1  # 只删 C
+    names = {x["name"] for x in chat.agents_brief()}
+    assert {"A", "B", "D", "user"} <= names
+    assert "C" not in names
+
+
+def test_hidden_after_7_days(home, chat, agents):
+    a, b, c = agents
+    chat.send(a, "hi", to=["B"])
+    _age("B", 8)
+    _age("C", 3)
+    brief = {x["name"]: x for x in chat.agents_brief()}
+    assert brief["B"]["hidden"] is True
+    assert brief["C"]["hidden"] is False  # 离线才 3 天
+    assert brief["A"]["hidden"] is False  # 在线
+    assert brief["user"]["hidden"] is False
+    hidden = chat.hidden_agents()
+    assert [h["name"] for h in hidden] == ["B"]
+    assert hidden[0]["messages"] == 1
+    assert "B" not in [ln.split()[1] for ln in chat.who().splitlines()]
+
+
+def test_who_keeps_online_agent_with_old_last_seen(home, chat, agents):
+    from datetime import datetime, timedelta
+
+    old = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+    with db._conn() as c:
+        c.execute("UPDATE agents SET last_seen=? WHERE name='A'", (old,))  # 在线，只是很久没调用工具
+    assert "A" in [ln.split()[1] for ln in chat.who().splitlines()]
+
+
+def test_forget_only_offline_agents_without_messages(home, chat, agents):
+    a, b, c = agents
+    chat.send(a, "hi", to=["B"])
+    assert chat.forget("C").startswith("错误")  # 还在线
+    _age("B", 1)
+    _age("C", 1)
+    assert "只能隐藏" in chat.forget("B")  # 有消息
+    assert chat.forget("C") == "已删除 C"
+    assert chat.forget("C").startswith("错误")  # 已经没了
+    assert chat.forget("user").startswith("错误")
+
+
+def test_messages_with_agent(home, chat, agents):
+    a, b, c = agents
+    chat.send(a, "1", to=["B"])
+    chat.send(c, "2", to=["A"])
+    chat.send(b, "3")  # B 发的广播
+    assert [m["text"] for m in chat.messages_with("B")] == ["1", "3"]
+    assert [m["text"] for m in chat.messages_with("B", limit=1)] == ["3"]  # 取最近的
+    assert chat.messages_with("nobody") == []

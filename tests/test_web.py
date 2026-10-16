@@ -170,3 +170,35 @@ def test_upload_and_download(server):
     name = Path(out["path"]).name
     assert "/" not in name and "\\" not in name
     assert Path(out["path"]).parent == config.files_dir()
+
+
+def test_hidden_forget_and_history_endpoints(server):
+    import os
+    from datetime import datetime, timedelta
+
+    from kopitiam import db
+
+    srv, token, url = server
+    base, h = _base(srv), {"X-Token": token}
+    old = (datetime.now() - timedelta(days=10)).isoformat(timespec="seconds")
+    a = db.claim("codex", cwd=".", name="old", pid=os.getpid())
+    db.release(a)
+    with db._conn() as c:
+        c.execute("UPDATE agents SET last_seen=? WHERE id=?", (old, a))
+
+    assert _get(base + "/api/hidden")[0] == 403  # 要 token
+    code, body = _get(base + "/api/hidden", headers=h)
+    assert code == 200
+    assert [x["name"] for x in json.loads(body)["agents"]] == ["old"]
+
+    _post(base + "/api/send", json.dumps({"text": "给 old", "to": ["old"]}).encode("utf-8"), h)
+    code, body = _get(base + "/api/messages?with=old", headers=h)
+    assert [m["text"] for m in json.loads(body)["messages"]] == ["给 old"]
+
+    code, body = _post(base + "/api/forget", json.dumps({"name": "old"}).encode("utf-8"), h)
+    assert json.loads(body)["ok"] is False  # 有消息，不能删
+    b = db.claim("pi", cwd=".", name="empty", pid=os.getpid())
+    db.release(b)
+    code, body = _post(base + "/api/forget", json.dumps({"name": "empty"}).encode("utf-8"), h)
+    assert json.loads(body)["ok"] is True
+    assert _post(base + "/api/forget", b"{}")[0] == 403  # 要 token

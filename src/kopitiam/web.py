@@ -24,6 +24,10 @@ SEND_BODY_MAX = 1024 * 1024
 def make_server(port: int = 8765) -> tuple[ThreadingHTTPServer, str, str]:
     """起 HTTP 服务，返回 (server, token, url)。port=0 让系统随机分配（测试用）。"""
     db.init_db()
+    try:
+        db.purge_stale()  # 启动时清理很久不用、又没有消息的旧身份
+    except Exception:
+        pass
     token = secrets.token_urlsafe(16)
     user = db.user_id()
 
@@ -102,11 +106,17 @@ class _Handler(BaseHTTPRequestHandler):
             except ValueError:
                 return self._json({"error": "bad after"}, 400)
             chat = Chat()
-            msgs = chat.messages_after(after, 200)
-            for m in msgs:
-                for f in m["files"]:
-                    f["url"] = f"/files/{quote(Path(f['path']).name)}?t={self.token}"
+            msgs = self._with_urls(chat.messages_after(after, 200))
             return self._json({"agents": chat.agents_brief(), "messages": msgs})
+        if u.path == "/api/messages":
+            if not self._token_header_ok():
+                return self._deny()
+            name = parse_qs(u.query).get("with", [""])[0]
+            return self._json({"messages": self._with_urls(Chat().messages_with(name, 200))})
+        if u.path == "/api/hidden":
+            if not self._token_header_ok():
+                return self._deny()
+            return self._json({"agents": Chat().hidden_agents()})
         if u.path.startswith("/files/"):
             if parse_qs(u.query).get("t", [""])[0] != self.token:
                 return self._deny()
@@ -123,7 +133,26 @@ class _Handler(BaseHTTPRequestHandler):
             return self._api_send()
         if u.path == "/api/upload":
             return self._api_upload(parse_qs(u.query))
+        if u.path == "/api/forget":
+            return self._api_forget()
         return self._deny(404)
+
+    def _with_urls(self, msgs: list[dict]) -> list[dict]:
+        for m in msgs:
+            for f in m["files"]:
+                f["url"] = f"/files/{quote(Path(f['path']).name)}?t={self.token}"
+        return msgs
+
+    def _api_forget(self) -> None:
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > SEND_BODY_MAX:
+            return self._json({"ok": False, "error": "请求体太大"}, 413)
+        try:
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return self._json({"ok": False, "error": "bad json"}, 400)
+        out = Chat().forget(str(data.get("name") or ""))
+        self._json({"ok": not out.startswith("错误："), "message": out})
 
     # ---- 接口 ----
 
@@ -402,6 +431,30 @@ main { flex:1; min-width:0; display:flex; flex-direction:column; }
 #menuBtn { display:none; width:36px; height:36px; padding:0; justify-content:center; }
 
 #stream { flex:1; overflow-y:auto; padding:24px 24px 8px; }
+
+/* ---- 「已隐藏」子页面 ---- */
+main.page > #convbar, main.page > #stream, main.page > #composer { display:none; }
+#hiddenPage { flex:1; min-height:0; display:flex; flex-direction:column; }
+.pagebar { flex-shrink:0; display:flex; align-items:center; gap:14px; min-height:58px; padding:8px 24px; background:var(--panel); border-bottom:1px solid var(--line); }
+.pagebar .titles { flex:1; min-width:0; }
+.ptitle { font-size:15px; font-weight:600; }
+.psub { font-size:12px; color:var(--muted); }
+#hiddenList { flex:1; overflow-y:auto; padding:22px 24px; }
+.hcard { max-width:860px; margin:0 auto 10px; display:flex; align-items:center; gap:14px; padding:14px 16px; border:1px solid var(--line); border-radius:16px; background:var(--panel); animation:rise .25s ease-out both; }
+.hcard .avatar { width:44px; height:44px; filter:grayscale(1); opacity:.55; }
+.hcard .info { flex:1; min-width:0; }
+.hcard .line1 { display:flex; align-items:center; gap:6px; }
+.hcard .name { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.hcard .cwd { font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.hmeta { margin-top:3px; font-size:12px; color:var(--ink-2); }
+.acts { flex-shrink:0; display:flex; align-items:center; gap:8px; }
+.acts .keep { font-size:12px; color:var(--muted); }
+.btn.danger { color:#e5484d; }
+.btn.danger:hover { border-color:#e5484d; }
+.hempty { margin-top:16vh; text-align:center; font-size:13px; color:var(--muted); }
+.hidden-link { width:100%; display:flex; align-items:center; gap:8px; margin-top:10px; padding:9px 10px; border:0; border-top:1px solid var(--line); background:transparent; color:var(--muted); font-size:12px; font-weight:600; letter-spacing:.3px; cursor:pointer; }
+.hidden-link:hover { color:var(--ink-2); }
+.hidden-link .grow { flex:1; text-align:left; }
 #list { max-width:860px; margin:0 auto; }
 .enter { animation:rise .3s cubic-bezier(.2, .7, .3, 1) both; }
 #empty { display:flex; flex-direction:column; align-items:center; gap:14px; margin-top:16vh; text-align:center; }
@@ -476,6 +529,10 @@ main { flex:1; min-width:0; display:flex; flex-direction:column; }
   #convbar { padding:0 12px; }
   #stream { padding:16px 12px 8px; }
   #composer { padding:8px 10px 12px; }
+  .pagebar { padding:8px 12px; }
+  #hiddenList { padding:14px 12px; }
+  .hcard { flex-wrap:wrap; }
+  .acts { width:100%; justify-content:flex-end; }
   .msg .body { max-width:85%; }
   .file { min-width:0; }
   .hint { display:none; }
@@ -495,7 +552,7 @@ main { flex:1; min-width:0; display:flex; flex-direction:column; }
   </div>
 </aside>
 <div id="backdrop"></div>
-<main>
+<main id="main">
   <div id="convbar">
     <button id="menuBtn" class="btn" aria-label="成员列表"><span data-icon="menu"></span></button>
     <span id="convAvatar" hidden></span>
@@ -520,6 +577,13 @@ main { flex:1; min-width:0; display:flex; flex-direction:column; }
       </div>
     </div>
   </div>
+  <section id="hiddenPage" hidden>
+    <div class="pagebar">
+      <button id="hiddenBack" class="btn"><span data-icon="back"></span>返回</button>
+      <div class="titles"><div class="ptitle">已隐藏的 agent</div><div class="psub">离线超过 7 天的收在这里；超过 30 天、又没有任何消息的会自动清理</div></div>
+    </div>
+    <div id="hiddenList"></div>
+  </section>
 </main>
 <script>
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
@@ -554,6 +618,10 @@ const ICONS = {
   plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
   x: '<path d="M7 7l10 10"/><path d="M17 7L7 17"/>',
   chev: '<path d="M9.5 6l6 6-6 6"/>',
+  back: '<path d="M14.5 6l-6 6 6 6"/>',
+  archive: '<rect x="3.5" y="4" width="17" height="4.5" rx="1.5"/><path d="M5.5 8.5V18a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8.5"/><path d="M10 12.5h4"/>',
+  trash: '<path d="M4 7h16"/><path d="M9 7V4.5h6V7"/><path d="M6.5 7l1 12.5a1.5 1.5 0 0 0 1.5 1.5h6a1.5 1.5 0 0 0 1.5-1.5l1-12.5"/>',
+  chat: '<path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.2A8 8 0 1 1 20 12z"/>',
   palette: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.8-.8 1.8-1.8 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.8 1.8-1.8H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11.5" r="1"/><circle cx="10" cy="7.5" r="1"/><circle cx="14.5" cy="7.5" r="1"/>',
 };
 const LOGO = '<path d="M6 13h17v6a7 7 0 0 1-7 7h-3a7 7 0 0 1-7-7z"/><path d="M23 15h1.5a3.5 3.5 0 0 1 0 7H22.4"/><path d="M11.5 9.5c0-1.6 1.6-1.6 1.6-3.2s-1.6-1.6-1.6-3.2"/><path d="M17 9.5c0-1.6 1.6-1.6 1.6-3.2S17 4.7 17 3.1"/>';
@@ -680,7 +748,9 @@ function renderAgents(agents) {
   const j = JSON.stringify(agents) + "|" + selected;
   if (j === agentJson) return;
   agentJson = j;
-  const online = agents.filter(a => a.online), offline = agents.filter(a => !a.online);
+  const shownAgents = agents.filter(a => !a.hidden);  // 离线超过 7 天的收进「已隐藏」子页面
+  const hiddenN = agents.length - shownAgents.length;
+  const online = shownAgents.filter(a => a.online), offline = shownAgents.filter(a => !a.online);
   const n = online.filter(a => a.name !== "user").length;
   $("brandsub").textContent = n ? n + " 个 agent 在线" : "本地聊天室 · 暂无 agent 在线";
   const box = $("agents");
@@ -698,7 +768,69 @@ function renderAgents(agents) {
     for (const a of offline) det.append(agentRow(a));
     box.append(det);
   }
+  if (hiddenN) {
+    const link = el("button", "hidden-link");
+    link.append(icon("archive", 14), el("span", "grow", "已隐藏 · " + hiddenN), icon("chev", 12));
+    link.onclick = openHidden;
+    box.append(link);
+  }
   if (selected) updateConvbar();
+}
+
+// ---- 「已隐藏」子页面 ----
+async function openHidden() {
+  closeSide();
+  $("main").classList.add("page");
+  $("hiddenPage").hidden = false;
+  await loadHidden();
+}
+
+function closeHidden() {
+  $("main").classList.remove("page");
+  $("hiddenPage").hidden = true;
+}
+
+async function loadHidden() {
+  const r = await api("/api/hidden");
+  const list = $("hiddenList");
+  list.textContent = "";
+  const agents = r.agents || [];
+  if (!agents.length) { list.append(el("div", "hempty", "没有隐藏的 agent")); return; }
+  for (const a of agents) list.append(hiddenCard(a));
+}
+
+function hiddenCard(a) {
+  const card = el("div", "hcard");
+  const info = el("div", "info");
+  const line1 = el("div", "line1");
+  line1.append(el("span", "name", a.name), el("span", "kind", a.kind));
+  info.append(line1, el("div", "cwd", a.cwd),
+    el("div", "hmeta", "最后出现 " + fmtTime(a.last_seen) + " · " + a.ago + " · " +
+      (a.messages ? a.messages + " 条相关消息" : "没有消息")));
+  const acts = el("div", "acts");
+  const view = el("button", "btn");
+  view.append(icon("chat", 14), el("span", "", "查看对话"));
+  view.onclick = () => select(a.name);
+  acts.append(view);
+  if (a.messages) {
+    acts.append(el("span", "keep", "有消息，只隐藏"));  // 删了历史消息就没有发送者名字了
+  } else {
+    const del = el("button", "btn danger");
+    del.append(icon("trash", 14), el("span", "", "删除"));
+    del.onclick = async () => {
+      if (!confirm("删除 " + a.name + "？它没有任何消息，删除后不能恢复。")) return;
+      const out = await api("/api/forget", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: a.name }),
+      });
+      if (!out.ok) alert(out.message || "删除失败");
+      agentJson = "";
+      await loadHidden();
+      poll();
+    };
+    acts.append(del);
+  }
+  card.append(avatar(a.name, false, true), info, acts);
+  return card;
 }
 
 function agentRow(a) {
@@ -770,6 +902,7 @@ function updateConvbar() {
 function closeSide() { $("side").classList.remove("open"); $("backdrop").classList.remove("show"); }
 
 function select(name) {
+  closeHidden();
   selected = name;
   updateConvbar();
   $("to").value = name || "";
@@ -779,12 +912,23 @@ function select(name) {
   closeSide();
   const s = $("stream"); s.scrollTop = s.scrollHeight;
   $("text").focus();
+  if (name) loadHistory(name);
 }
 
-function addMessage(m) {
+// 页面一开始只加载最新的 200 条；进入某个对话时，再从服务器补全它最近 200 条历史
+async function loadHistory(name) {
+  const r = await api("/api/messages?with=" + encodeURIComponent(name));
+  if (selected !== name) return;  // 等待期间已经切到别的对话
+  for (const m of (r.messages || [])) addMessage(m, true);
+  applyFilter();
+  const s = $("stream"); s.scrollTop = s.scrollHeight;
+}
+
+function addMessage(m, backfill) {
   if (known.has(m.id)) return;
   known.add(m.id);
-  if (m.id > lastId) lastId = m.id;  // 下次轮询只要更新的消息
+  // 补全的历史不推进 lastId：否则 lastId 跳过去，中间别人的消息就再也拉不到了
+  if (!backfill && m.id > lastId) lastId = m.id;  // 下次轮询只要更新的消息
   const mine = m.sender === "user";
   let div;
   if (/^（.+ 改名为 .+）$/.test(m.text) && !m.files.length) {
@@ -825,9 +969,13 @@ function addMessage(m) {
   }
   div._m = m;
   div.hidden = selected !== null && !involves(m, selected);
-  if (booted) div.classList.add("enter");  // 首次加载的历史消息不播动画，之后的新消息淡入
-  $("list").append(div);
-  if (booted && !mine && div.className.startsWith("msg")) startTalk(m.sender);
+  const fresh = booted && !backfill;
+  if (fresh) div.classList.add("enter");  // 首次加载和补全的历史不播动画，之后的新消息淡入
+  // 按 id 顺序插入（补全的历史比现有的旧，要插到前面）
+  const list = $("list"), last = list.lastElementChild;
+  if (last && last._m.id > m.id) list.insertBefore(div, [...list.children].find(e => e._m.id > m.id));
+  else list.append(div);
+  if (fresh && !mine && div.className.startsWith("msg")) startTalk(m.sender);
 }
 
 async function poll() {
@@ -935,7 +1083,12 @@ for (const m of document.querySelectorAll("[data-logo]")) m.innerHTML = svg(LOGO
 renderThemes();
 $("themeBtn").onclick = (e) => { e.stopPropagation(); $("themePop").hidden = !$("themePop").hidden; };
 document.addEventListener("click", (e) => { if (!$("themePop").contains(e.target)) $("themePop").hidden = true; });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("themePop").hidden = true; });
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("themePop").hidden) $("themePop").hidden = true;
+  else if (!$("hiddenPage").hidden) closeHidden();
+});
+$("hiddenBack").onclick = closeHidden;
 $("send").onclick = send;
 $("showAll").onclick = () => select(null);
 $("text").addEventListener("input", () => { updateSend(); autosize(); });

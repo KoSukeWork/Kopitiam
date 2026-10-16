@@ -89,6 +89,11 @@ def export_context(mode: str = "clean", session_file: str | None = None) -> str:
 def start(kind: str, name: str | None = None) -> int:
     """认领身份并注册退出清理；返回 agent id（不进入事件循环，测试用）。"""
     global _ME
+    db.init_db()
+    try:
+        db.purge_stale()  # 顺手清理很久不用、又没有消息的旧身份；失败不影响启动
+    except Exception:
+        pass
     agent_id = db.claim(kind=kind, cwd=os.getcwd(), name=name)
     atexit.register(db.release, agent_id)
     _ME = agent_id

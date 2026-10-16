@@ -20,6 +20,7 @@ import psutil
 from .config import (
     FILE_MAX,
     FILES_MAX,
+    PURGE_AFTER,
     TEXT_MAX,
     WHO_WINDOW,
     data_dir,
@@ -247,6 +248,50 @@ def release(agent_id: int) -> None:
         pass  # 退出清理尽力而为
 
 
+def _ago_cutoff(seconds: int) -> str:
+    return (datetime.now() - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+def _is_hidden(row, cutoff: str) -> bool:
+    """离线超过 WHO_WINDOW 的 agent：不在 who / 网页主列表里显示（用户永远显示）。"""
+    return row["kind"] != "human" and row["last_seen"] < cutoff and not is_online(row)
+
+
+def _message_counts(c) -> dict[int, int]:
+    """每个 agent 关联的消息数：它发的 + 单独发给它的（广播不算）。"""
+    counts: dict[int, int] = {}
+    for sid, n in c.execute("SELECT sender_id, COUNT(*) FROM messages GROUP BY sender_id"):
+        counts[sid] = counts.get(sid, 0) + n
+    for (t,) in c.execute("SELECT to_ids FROM messages WHERE to_ids <> '[]'"):
+        for i in set(Chat._targets(t)):
+            counts[i] = counts.get(i, 0) + 1
+    return counts
+
+
+def purge_stale() -> int:
+    """删掉离线超过 PURGE_AFTER、而且没有任何消息关联的身份，返回删掉的个数。
+
+    有消息关联的身份只隐藏不删：历史消息要靠它显示发送者名字（外键也不允许删）。
+    改过名的身份一定发过改名广播，所以自定义名字不会被清理掉。
+    """
+    cutoff = _ago_cutoff(PURGE_AFTER)
+    with _conn() as c:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            counts = _message_counts(c)
+            rows = c.execute(
+                "SELECT * FROM agents WHERE kind <> 'human' AND last_seen < ?", (cutoff,)
+            ).fetchall()
+            gone = [r["id"] for r in rows if not counts.get(r["id"]) and not is_online(r)]
+            for i in gone:
+                c.execute("DELETE FROM agents WHERE id=?", (i,))
+            c.execute("COMMIT")
+        except BaseException:
+            c.execute("ROLLBACK")
+            raise
+    return len(gone)
+
+
 def user_id() -> int:
     init_db()
     with _conn() as c:
@@ -346,8 +391,9 @@ class Chat:
     def who(self) -> str:
         with _conn() as c:
             rows = c.execute("SELECT * FROM agents").fetchall()
-        cutoff = (datetime.now() - timedelta(seconds=WHO_WINDOW)).isoformat(timespec="seconds")
-        shown = [r for r in rows if r["name"] == "user" or r["last_seen"] >= cutoff]
+        cutoff = _ago_cutoff(WHO_WINDOW)
+        # 在线的永远显示（哪怕很久没调用工具，last_seen 很旧）
+        shown = [r for r in rows if not _is_hidden(r, cutoff)]
         shown.sort(key=lambda r: r["last_seen"], reverse=True)
         shown.sort(key=lambda r: 0 if (r["name"] == "user" or is_online(r)) else 1)
         if not shown:
@@ -626,18 +672,68 @@ class Chat:
     # ---- 网页用的读取接口（不改变任何人的 last_read） ----
 
     def agents_brief(self) -> list[dict]:
+        """所有身份；hidden = 离线超过 7 天（网页主列表不显示，收进「已隐藏」子页面）。"""
+        cutoff = _ago_cutoff(WHO_WINDOW)
         with _conn() as c:
             rows = c.execute("SELECT * FROM agents ORDER BY id").fetchall()
-        return [
-            {
+        out = []
+        for r in rows:
+            online = r["kind"] == "human" or is_online(r)
+            out.append({
                 "id": r["id"],
                 "name": r["name"],
                 "kind": r["kind"],
                 "cwd": r["cwd"],
-                "online": r["name"] == "user" or is_online(r),
+                "online": online,
+                "last_seen": r["last_seen"],
+                "hidden": not online and r["kind"] != "human" and r["last_seen"] < cutoff,
+            })
+        return out
+
+    def hidden_agents(self) -> list[dict]:
+        """「已隐藏」子页面：离线超过 7 天的身份，最近出现的排前面，带关联消息数。"""
+        cutoff = _ago_cutoff(WHO_WINDOW)
+        with _conn() as c:
+            rows = c.execute(
+                "SELECT * FROM agents WHERE kind <> 'human' ORDER BY last_seen DESC"
+            ).fetchall()
+            counts = _message_counts(c)
+        return [
+            {
+                "name": r["name"],
+                "kind": r["kind"],
+                "cwd": r["cwd"],
+                "last_seen": r["last_seen"],
+                "ago": _ago(r["last_seen"]),
+                "messages": counts.get(r["id"], 0),
             }
-            for r in rows
+            for r in rows if _is_hidden(r, cutoff)
         ]
+
+    def forget(self, name: str) -> str:
+        """网页手动删除一个身份：只允许离线、而且没有任何消息关联的（否则历史消息会丢名字）。"""
+        with _conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                row = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
+                if row is None:
+                    raise _Fail(f'错误：找不到 "{name}"')
+                if row["kind"] == "human":
+                    raise _Fail("错误：不能删除用户身份")
+                if is_online(row):
+                    raise _Fail(f"错误：{row['name']} 还在线，不能删除")
+                n = _message_counts(c).get(row["id"], 0)
+                if n:
+                    raise _Fail(f"错误：{row['name']} 有 {n} 条相关消息，只能隐藏、不能删除")
+                c.execute("DELETE FROM agents WHERE id=?", (row["id"],))
+                c.execute("COMMIT")
+            except _Fail as e:
+                c.execute("ROLLBACK")
+                return str(e)
+            except BaseException:
+                c.execute("ROLLBACK")
+                raise
+        return f"已删除 {row['name']}"
 
     def messages_after(self, after: int, limit: int = 200) -> list[dict]:
         """user 能看到所有消息（包括 agent 之间互发的）。"""
@@ -650,14 +746,35 @@ class Chat:
             ).fetchall()
             if order == "DESC":
                 rows.reverse()
-            names = {r["id"]: r["name"] for r in c.execute("SELECT id, name FROM agents")}
-            kinds = {r["id"]: r["kind"] for r in c.execute("SELECT id, kind FROM agents")}
-            atts: dict[int, list[sqlite3.Row]] = {}
-            for r in c.execute("SELECT * FROM attachments ORDER BY id"):
+            return self._to_json(c, rows)
+
+    def messages_with(self, name: str, limit: int = 200) -> list[dict]:
+        """某个 agent 发的、和单独发给它的最近 limit 条（id 升序）。网页进入对话时用来补全历史。"""
+        with _conn() as c:
+            row = c.execute("SELECT id FROM agents WHERE name=?", (name,)).fetchone()
+            if row is None:
+                return []
+            aid = row["id"]
+            rows = []
+            for m in c.execute("SELECT * FROM messages ORDER BY id DESC"):
+                if m["sender_id"] == aid or aid in self._targets(m["to_ids"]):
+                    rows.append(m)
+                    if len(rows) >= limit:
+                        break
+            rows.reverse()
+            return self._to_json(c, rows)
+
+    def _to_json(self, c, rows) -> list[dict]:
+        names = {r["id"]: r["name"] for r in c.execute("SELECT id, name FROM agents")}
+        kinds = {r["id"]: r["kind"] for r in c.execute("SELECT id, kind FROM agents")}
+        atts: dict[int, list[sqlite3.Row]] = {}
+        ids = [m["id"] for m in rows]
+        if ids:
+            marks = ",".join("?" * len(ids))
+            for r in c.execute(f"SELECT * FROM attachments WHERE message_id IN ({marks}) ORDER BY id", ids):
                 atts.setdefault(r["message_id"], []).append(r)
-        out = []
-        for m in rows:
-            out.append({
+        return [
+            {
                 "id": m["id"],
                 "time": m["created_at"],
                 "sender": names.get(m["sender_id"], "?"),
@@ -668,8 +785,9 @@ class Chat:
                     {"name": a["orig_name"], "path": a["path"], "size": a["size"]}
                     for a in atts.get(m["id"], [])
                 ],
-            })
-        return out
+            }
+            for m in rows
+        ]
 
     # ---- 格式化 ----
 
