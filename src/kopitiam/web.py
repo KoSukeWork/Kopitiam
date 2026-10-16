@@ -249,10 +249,24 @@ INDEX_HTML = """<!doctype html>
   --mine-bg:#d9466f; --mine-ink:#ffffff; --g1:#d9466f; --g2:#f59ec0; --g3:#a78bfa; --glow:rgba(217,70,111,.28);
   --avb-s:55%; --avb-l:52%; --avf-s:0%; --avf-l:100%;
 }
+/* 机器人头像的底色和头部颜色（色相按名字算，这里只定饱和度/亮度） */
+:root { --bot-bg-s:70%; --bot-bg-l:92%; --bot-head-s:62%; --bot-head-l:60%; }
+[data-theme="obsidian"] { --bot-bg-s:22%; --bot-bg-l:12%; --bot-head-s:42%; --bot-head-l:44%; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) { --bot-bg-s:22%; --bot-bg-l:12%; --bot-head-s:42%; --bot-head-l:44%; }
+}
+[data-theme="dark"], [data-theme="kopi"], [data-theme="ocean"] { --bot-bg-s:30%; --bot-bg-l:18%; --bot-head-s:52%; --bot-head-l:52%; }
 
 /* ---- 动效 ---- */
 @property --angle { syntax:"<angle>"; inherits:false; initial-value:0deg; }
 @keyframes spin { to { --angle:360deg; } }
+@keyframes blink { 0%, 92%, 100% { transform:scaleY(1); } 95% { transform:scaleY(.1); } }
+@keyframes look { 0%, 34%, 100% { transform:translateX(0); } 40%, 54% { transform:translateX(1.8px); } 60%, 74% { transform:translateX(-1.8px); } 80% { transform:translateX(0); } }
+@keyframes beacon { 0%, 100% { opacity:1; filter:drop-shadow(0 0 2.5px var(--ok)); } 50% { opacity:.5; filter:none; } }
+@keyframes talk { from { transform:scaleY(1); } to { transform:scaleY(3.4) scaleX(1.15); } }
+@keyframes chatter { from { transform:translateY(0); } to { transform:translateY(-1.2px); } }
+@keyframes zz { 0% { opacity:0; transform:translate(0, 4px) scale(.7); } 30% { opacity:1; } 100% { opacity:0; transform:translate(5px, -7px) scale(1.15); } }
+@keyframes bob { 0%, 100% { transform:translateY(0); } 50% { transform:translateY(-1.5px); } }
 @keyframes rise { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
 @keyframes ping { 0% { transform:scale(.7); opacity:.6; } 80%, 100% { transform:scale(1.9); opacity:0; } }
 @keyframes pop { from { opacity:0; transform:translateY(6px) scale(.98); } to { opacity:1; transform:none; } }
@@ -307,6 +321,35 @@ details.offline > summary:hover { color:var(--ink-2); }
 .avatar .st { position:absolute; right:-1px; bottom:-1px; width:11px; height:11px; border-radius:50%; background:var(--ok); border:2px solid var(--panel); }
 .avatar .st::after { content:""; position:absolute; inset:-2px; border-radius:50%; border:2px solid var(--ok); animation:ping 2.6s ease-out infinite; }
 .agent.off .avatar { filter:grayscale(1); opacity:.45; }
+
+/* ---- 机器人头像：在线 = 醒着（眨眼、东张西望、天线灯呼吸），离线 = 睡觉，发消息时张嘴说话 ---- */
+.bot { background:hsl(var(--h) var(--bot-bg-s) var(--bot-bg-l)); overflow:visible; }
+.bot svg { width:100%; height:100%; overflow:visible; transition:transform .3s cubic-bezier(.3, 1.6, .5, 1); }
+.agent:hover .bot svg { transform:rotate(-9deg) translateY(-1px); }
+.bot .head { fill:hsl(var(--h) var(--bot-head-s) var(--bot-head-l)); }
+.bot .ear { fill:hsl(var(--h) var(--bot-head-s) calc(var(--bot-head-l) - 12%)); }
+.bot .stalk { stroke:hsl(var(--h) var(--bot-head-s) calc(var(--bot-head-l) - 12%)); stroke-width:1.8; stroke-linecap:round; }
+.bot .visor { fill:#0d0e14; }
+.bot .eye { fill:hsl(var(--h) 100% 76%); filter:drop-shadow(0 0 1.6px hsl(var(--h) 100% 66%)); }
+.bot .mouth { fill:hsl(var(--h) 100% 76%); opacity:.85; }
+.bot .mouth.s { fill:none; stroke:hsl(var(--h) 100% 76%); stroke-width:1.4; stroke-linecap:round; }
+.bot .sleep { fill:none; stroke:hsl(var(--h) 40% 70%); stroke-width:1.6; stroke-linecap:round; display:none; }
+.bot .light { fill:var(--muted); }
+.bot .eye, .bot .mouth, .bot .lids, .bot .eyes { transform-box:fill-box; transform-origin:center; }
+.bot.on .light { fill:var(--ok); animation:beacon 2.4s ease-in-out infinite; animation-delay:var(--d); }
+.bot.on .lids { animation:blink 5.2s infinite; animation-delay:var(--d); }
+.bot.on .eyes { animation:look 9s ease-in-out infinite; animation-delay:var(--d2); }
+.bot.on .face { animation:bob 3.6s ease-in-out infinite; animation-delay:var(--d2); }
+.bot.talk .mouth { animation:talk .16s ease-in-out infinite alternate; }
+.bot.on.talk .face, .bot.talk .face { animation:chatter .16s ease-in-out infinite alternate; }
+.agent .avatar { width:40px; height:40px; font-size:15px; }
+.bot.off .eyes { display:none; }
+.bot.off .sleep { display:inline; }
+.bot .z { position:absolute; right:-4px; top:-8px; font-size:11px; font-weight:700; color:var(--muted); pointer-events:none; animation:zz 3.2s ease-in-out infinite; animation-delay:var(--d); }
+.bot.still *, .bot.still svg { animation:none !important; }
+.bot.still .light { fill:hsl(var(--h) 80% 72%); }  /* 消息里的头像不表示在线状态，天线灯用中性色 */
+#convAvatar .avatar { width:34px; height:34px; }
+#emptyArt .bot { width:72px; height:72px; }
 .agent .info { flex:1; min-width:0; }
 .agent .line1 { display:flex; align-items:center; gap:6px; min-width:0; }
 .agent .name { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -446,12 +489,13 @@ main { flex:1; min-width:0; display:flex; flex-direction:column; }
 <main>
   <div id="convbar">
     <button id="menuBtn" class="btn" aria-label="成员列表"><span data-icon="menu"></span></button>
+    <span id="convAvatar" hidden></span>
     <div class="titles"><div id="convtitle">全部消息</div><div id="convsub">所有人之间的消息都在这里</div></div>
     <button id="showAll" class="btn" hidden>显示全部</button>
   </div>
   <div id="stream">
     <div id="list"></div>
-    <div id="empty"><span class="mark" data-logo data-size="34"></span><div id="emptyTitle">kopitiam</div><div id="emptySub">还没有消息</div></div>
+    <div id="empty"><span id="emptyArt"><span class="mark" data-logo data-size="34"></span></span><div id="emptyTitle">kopitiam</div><div id="emptySub">还没有消息</div></div>
   </div>
   <div id="composer">
     <div class="box">
@@ -524,11 +568,80 @@ function hue(name) {
 
 function shown(name) { return name === "user" ? "你" : name; }
 
-function avatar(name, online) {
-  const a = el("div", "avatar", name === "user" ? "你" : [...name][0].toUpperCase());
+function seed(name) {  // FNV-1a：和 hue 独立的第二个哈希，用来挑机器人的部件和动画节奏
+  let x = 2166136261;
+  for (const c of name) { x ^= c.codePointAt(0); x = Math.imul(x, 16777619) >>> 0; }
+  return x;
+}
+
+// 机器人部件（写死的 SVG 常量；名字只用来算编号，不会进 innerHTML）
+const BOT = {
+  ant: [
+    '<line class="stalk" x1="20" y1="10" x2="20" y2="5"/><circle class="light" cx="20" cy="3.6" r="2.4"/>',
+    '<line class="stalk" x1="14.5" y1="10" x2="12" y2="5.2"/><line class="stalk" x1="25.5" y1="10" x2="28" y2="5.2"/>' +
+      '<circle class="light" cx="11.6" cy="4.4" r="2"/><circle class="light" cx="28.4" cy="4.4" r="2"/>',
+    '<rect class="light" x="14.5" y="6.2" width="11" height="3.8" rx="1.9"/>',
+  ],
+  eye: [
+    '<circle class="eye" cx="15.5" cy="20.5" r="2.3"/><circle class="eye" cx="24.5" cy="20.5" r="2.3"/>',
+    '<rect class="eye" x="14" y="17.8" width="3" height="5.6" rx="1.5"/><rect class="eye" x="23" y="17.8" width="3" height="5.6" rx="1.5"/>',
+    '<rect class="eye" x="13" y="19" width="14" height="3.4" rx="1.7"/>',
+  ],
+  sleep: ["M13.5 21h4M22.5 21h4", "M13.5 21h4M22.5 21h4", "M14 21h12"],
+  mouth: [
+    '<rect class="mouth" x="19" y="24.4" width="2" height="1.3" rx=".65"/>',
+    '<rect class="mouth" x="17.3" y="24.4" width="5.4" height="1.3" rx=".65"/>',
+    '<path class="mouth s" d="M17.2 24c1.6 1.5 4 1.5 5.6 0"/>',
+  ],
+};
+
+function bot(name, online, still) {
+  const v = seed(name);
+  const ant = v % 3, eye = Math.floor(v / 3) % 3, mouth = Math.floor(v / 9) % 3;
+  const a = el("div", "avatar bot " + (online ? "on" : "off") + (still ? " still" : ""));
+  a.style.setProperty("--h", hue(name));
+  // 负的延迟 = 动画一开始就处在不同进度，几个机器人不会同时眨眼
+  a.style.setProperty("--d", -((v >>> 8) % 50) / 10 + "s");
+  a.style.setProperty("--d2", -((v >>> 16) % 90) / 10 + "s");
+  a.innerHTML = '<svg viewBox="-1 -1.5 42 38" aria-hidden="true"><g class="face">' + BOT.ant[ant] +
+    '<rect class="ear" x="3" y="18" width="3.5" height="8" rx="1.5"/><rect class="ear" x="33.5" y="18" width="3.5" height="8" rx="1.5"/>' +
+    '<rect class="head" x="6" y="10" width="28" height="23" rx="8"/>' +
+    '<rect class="visor" x="9.5" y="14.5" width="21" height="13" rx="5"/>' +
+    '<g class="eyes"><g class="lids">' + BOT.eye[eye] + '</g></g>' +
+    '<path class="sleep" d="' + BOT.sleep[eye] + '"/>' + BOT.mouth[mouth] + '</g></svg>';
+  if (!online && !still) a.append(el("span", "z", "z"));
+  return a;
+}
+
+function avatar(name, online, still) {
+  if (name !== "user") return bot(name, online, still);
+  const a = el("div", "avatar", "你");  // 用户是人，保留圆形头像
   a.style.setProperty("--h", hue(name));
   if (online) a.append(el("span", "st"));
   return a;
+}
+
+function logoMark(size) {
+  const m = el("span", "mark");
+  m.innerHTML = svg(LOGO, size, 30, 2.1);
+  return m;
+}
+
+// ---- 说话：某个 agent 发来新消息时，它的机器人张嘴几秒 ----
+const talking = {};
+function startTalk(name) {
+  talking[name] = Date.now() + 2600;
+  refreshTalk();
+  setTimeout(refreshTalk, 2700);
+}
+function refreshTalk() {
+  const now = Date.now();
+  for (const row of document.querySelectorAll(".agent")) {
+    const b = row.querySelector(".bot");
+    if (b) b.classList.toggle("talk", (talking[row.dataset.name] || 0) > now);
+  }
+  const cb = $("convAvatar").querySelector(".bot");
+  if (cb) cb.classList.toggle("talk", (talking[selected] || 0) > now);
 }
 
 function fmtTime(iso) {
@@ -573,12 +686,15 @@ function renderAgents(agents) {
 function agentRow(a) {
   const div = el("div", "agent" + (a.online ? "" : " off") + (a.name === selected ? " active" : ""));
   div.title = a.cwd;
+  div.dataset.name = a.name;
   const info = el("div", "info");
   const line1 = el("div", "line1");
   line1.append(el("span", "name", a.name));
   if (a.name !== "user") line1.append(el("span", "kind", a.kind));
   info.append(line1, el("div", "cwd", a.name === "user" ? "你 · 网页" : a.cwd));
-  div.append(avatar(a.name, a.online), info);
+  const av = avatar(a.name, a.online);
+  if ((talking[a.name] || 0) > Date.now()) av.classList.add("talk");
+  div.append(av, info);
   if (a.name !== "user") {
     const add = el("button", "add");
     add.append(icon("plus", 15));
@@ -601,10 +717,19 @@ function involves(m, name) {
   return m.sender === name || m.to.includes(name) || m.to.length === 0;
 }
 
+let emptyKey = "logo";
 function updateEmpty() {
   const any = [...$("list").children].some(e => !e.hidden);
   $("empty").hidden = any;
+  $("emptyTitle").textContent = selected || "kopitiam";
   $("emptySub").textContent = selected ? "和 " + selected + " 还没有消息" : "还没有消息，在下面写第一句吧";
+  // 选中某个 agent 时换成它的大号机器人；只在变化时重建，否则每次轮询都会把动画打断
+  const a = selected && selected !== "user" ? agentsByName[selected] : null;
+  const key = selected ? selected + "|" + !!(a && a.online) : "logo";
+  if (key !== emptyKey) {
+    emptyKey = key;
+    $("emptyArt").replaceChildren(selected ? avatar(selected, !!(a && a.online)) : logoMark(34));
+  }
 }
 
 function applyFilter() {
@@ -619,6 +744,9 @@ function updateConvbar() {
     ? (a ? a.kind + " · " + (a.online ? "在线" : "离线") + " · " + a.cwd : "")
     : "所有人之间的消息都在这里";
   $("showAll").hidden = !selected;
+  $("convAvatar").hidden = !selected;
+  $("convAvatar").replaceChildren(...(selected ? [avatar(selected, !!(a && a.online))] : []));
+  refreshTalk();
 }
 
 function closeSide() { $("side").classList.remove("open"); $("backdrop").classList.remove("show"); }
@@ -646,7 +774,7 @@ function addMessage(m) {
     div.append(el("span", "", m.text.slice(1, -1)));
   } else {
     div = el("div", "msg" + (mine ? " mine" : ""));
-    if (!mine) div.append(avatar(m.sender, false));
+    if (!mine) div.append(avatar(m.sender, true, true));  // 消息里的头像不加动画，免得满屏都在动
     const body = el("div", "body");
     const meta = el("div", "meta");
     const who = el("span", "who", shown(m.sender));
@@ -681,6 +809,7 @@ function addMessage(m) {
   div.hidden = selected !== null && !involves(m, selected);
   if (booted) div.classList.add("enter");  // 首次加载的历史消息不播动画，之后的新消息淡入
   $("list").append(div);
+  if (booted && !mine && div.className.startsWith("msg")) startTalk(m.sender);
 }
 
 async function poll() {
