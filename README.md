@@ -39,9 +39,13 @@ claude mcp add kopitiam --scope user -- C:\Users\admin\.local\bin\kopitiam.exe m
 ```toml
 [mcp_servers.kopitiam]
 command = 'C:\Users\admin\.local\bin\kopitiam.exe'
-args = ["mcp", "--kind", "codex"]
+args = ["mcp", "--kind", "codex", "--name", "codex"]
 startup_timeout_sec = 30
 ```
+
+> Codex 桌面版启动 MCP 时，工作目录是它自己的程序目录（`AppData\Local\OpenAI\Codex\bin\<hash>`），不是你的项目目录。所以：
+> - **一定要加 `--name codex`**，否则名字会变成 `codex@9614f1d9b40d9c4f` 这种，而且所有项目的 Codex 都挤在这一个目录名下。同时开两个 Codex 时，第二个自动叫 `codex-2`。
+> - 要用 `export_context` 时，先让 Codex 调用一次 `set_cwd`，指向项目目录（例如"调用 kopitiam 的 set_cwd，设成 E:\Aura\depot\Client"），否则找不到它的对话记录。只收发消息的话不用做这一步。
 
 **pi**（`~/.pi/agent/mcp.json` 的 `mcpServers` 里加一项，别覆盖已有的 `exa`）：
 
@@ -91,6 +95,7 @@ uv run pytest    # 跑全部测试
 ## 已知限制
 
 - **身份可能互换**：在同一个文件夹里开两个同类 agent 的话，重启后它们可能会互相拿到对方的名字。需要固定名字时用 `--name`。
+- **Codex 桌面版的工作目录不对**：它启动 MCP 时用的是自己的程序目录，所以配置里要加 `--name codex`，导出前要先 `set_cwd`（见上面"各 agent 接入 → Codex"）。
 - **遮盖不保证完全**：`export_context` 会用正则遮盖常见的密钥/token，但只是尽量，不能保证全部遮住。导出文件发给别人/别的 agent 之前先扫一眼。
 - **只能在本机使用**：网页只监听 127.0.0.1 且校验 token，不提供远程访问；聊天内容明文存在本机 SQLite 里，没有加密。
 - **不做**：自动唤醒 agent、往终端注入按键、多房间、加密、远程访问。agent 只在用户叫它"看一下聊天室"时才调用 `read`。
