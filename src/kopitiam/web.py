@@ -545,8 +545,12 @@ main { flex:1; min-width:0; display:flex; flex-direction:column; }
 
 #stream { flex:1; overflow-y:auto; padding:24px 24px 8px; }
 
+/* 连不上网页服务时的提示条（服务关了、或重启后 token 变了） */
+#conn { flex-shrink:0; display:flex; align-items:center; gap:10px; padding:9px 24px; font-size:12.5px; color:var(--ink-2); background:var(--hover); border-bottom:1px solid var(--line); }
+#conn .dot { flex-shrink:0; width:8px; height:8px; border-radius:50%; background:#f59e0b; box-shadow:0 0 0 3px rgba(245,158,11,.18); animation:beacon 1.6s ease-in-out infinite; }
+
 /* ---- 「已隐藏」子页面 ---- */
-main.page > #convbar, main.page > #stream, main.page > #composer { display:none; }
+main.page > #convbar, main.page > #conn, main.page > #stream, main.page > #composer { display:none; }
 #hiddenPage { flex:1; min-height:0; display:flex; flex-direction:column; }
 .pagebar { flex-shrink:0; display:flex; align-items:center; gap:14px; min-height:58px; padding:8px 24px; background:var(--panel); border-bottom:1px solid var(--line); }
 .pagebar .titles { flex:1; min-width:0; }
@@ -694,6 +698,7 @@ main.page > #convbar, main.page > #stream, main.page > #composer { display:none;
   #backdrop.show { display:block; position:fixed; inset:0; z-index:10; background:rgba(0,0,0,.4); }
   #menuBtn { display:inline-flex; }
   #convbar { padding:0 12px; }
+  #conn { padding:8px 12px; }
   #stream { padding:16px 12px 8px; }
   #composer { padding:8px 10px 12px; }
   .pagebar { padding:8px 12px; }
@@ -732,6 +737,7 @@ main.page > #convbar, main.page > #stream, main.page > #composer { display:none;
     <div class="titles"><div id="convtitle">全部消息</div><div id="convsub">所有人之间的消息都在这里</div></div>
     <button id="showAll" class="btn" hidden>显示全部</button>
   </div>
+  <div id="conn" role="status" hidden></div>
   <div id="stream">
     <div id="list"></div>
     <div id="empty"><span id="emptyArt"><span class="mark" data-logo data-size="34"></span></span><div id="emptyTitle">kopitiam</div><div id="emptySub">还没有消息</div></div>
@@ -1359,9 +1365,22 @@ function addMessage(m, backfill) {
   if (fresh && !mine && div.className.startsWith("msg")) startTalk(m.sender);
 }
 
+// 连不上网页服务时在顶上提示；否则页面看起来一切正常，其实已经收不到新消息
+function setConn(state) {
+  const b = $("conn");
+  if ((b.dataset.state || "") === state) return;
+  b.dataset.state = state;
+  b.hidden = !state;
+  if (state) b.replaceChildren(el("span", "dot"), el("span", "", state === "token"
+    ? "这个网页已失效：kopitiam web 重启过，请打开终端里新打印的地址"
+    : "连不上 kopitiam web（可能已经关掉了），新消息不会显示；重新运行 kopitiam web 后用新地址打开"));
+}
+
 async function poll() {
   let st;
-  try { st = await api("/api/state?after=" + lastId); } catch (e) { return; }
+  try { st = await api("/api/state?after=" + lastId); } catch (e) { setConn("down"); return; }
+  if (st.error === "forbidden") { setConn("token"); return; }  // token 不对：服务重启过
+  setConn("");
   const s = $("stream");
   const atBottom = s.scrollTop + s.clientHeight >= s.scrollHeight - 40;
   for (const m of (st.messages || [])) addMessage(m);
@@ -1400,11 +1419,14 @@ async function send() {
   const text = $("text").value;
   const to = $("to").value.split(",").map(s => s.trim()).filter(Boolean);
   if (!text.trim() && !pendingFiles.length) return;
-  const out = await api("/api/send", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: text, to: to, files: pendingFiles.map(f => f.path) }),
-  });
+  let out;
+  try {
+    out = await api("/api/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text, to: to, files: pendingFiles.map(f => f.path) }),
+    });
+  } catch (e) { alert("发送失败：连不上 kopitiam web"); return; }
   if (!out.ok) { alert(out.message || "发送失败"); return; }
   $("text").value = "";
   autosize();
