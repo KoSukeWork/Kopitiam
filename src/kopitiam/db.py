@@ -37,7 +37,7 @@ from .config import (
     valid_name,
 )
 
-SCHEMA_VERSION = "2"  # 2：加了团队（peers / outbox / messages.remote_uid）
+SCHEMA_VERSION = "3"  # 2：加了团队（peers / outbox / messages.remote_uid）；3：加了自动唤醒（wake_state）
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -82,11 +82,21 @@ CREATE TABLE IF NOT EXISTS outbox(
   last_error TEXT,
   next_try   REAL NOT NULL DEFAULT 0,
   updated_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS wake_state(
+  agent_id    INTEGER PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  seen_upto   INTEGER NOT NULL DEFAULT 0,
+  woken_upto  INTEGER NOT NULL DEFAULT 0,
+  woken_at    REAL,
+  note        TEXT);
 """
 # peers：配对过的别人的电脑。name = 对方自报的名字；address = 对方团队端口 host:port；
 #   secret = 配对时生成的共享密钥（HMAC 签名用）；agent_id = 本机为这个人建的身份（kind='remote'）。
 # outbox：发给远端的人的消息，后台线程负责投递；status = pending / sent。
 # messages.remote_uid：别人发来的消息的全局 id（「对方 node_id:对方消息 id」），用来去重。
+# wake_state：自动唤醒的进度（只有感知模块读写，见 wake/detector.py）。seen_upto = 这个 id 及以前的消息
+#   已经判断过要不要叫醒；woken_upto = 最近一次叫醒时包含的最大消息 id（agent 读到这里之前不重复叫）；
+#   note = 最近一次的结果，给网页显示；enabled = 用户在网页上关掉某个 agent 的自动唤醒时为 0。
 
 
 class _Fail(Exception):

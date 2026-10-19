@@ -17,6 +17,9 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from . import db, peer
 from .config import FILE_MAX, PEER_PORT, files_dir, safe
 from .db import Chat
+from .wake import detector
+from .wake import service as wake_service
+from .wake.service import WakeService
 
 TEXT_SUFFIXES = {".md", ".txt", ".json", ".log"}
 SEND_BODY_MAX = 1024 * 1024
@@ -24,17 +27,21 @@ SEND_BODY_MAX = 1024 * 1024
 
 class _WebServer(ThreadingHTTPServer):
     peer_service: peer.PeerService
+    wake_service: WakeService | None = None
 
-    def server_close(self) -> None:  # 网页关掉时，团队端口和后台投递线程一起停
+    def server_close(self) -> None:  # 网页关掉时，团队端口、后台投递线程、自动唤醒一起停
         super().server_close()
         self.peer_service.stop()
+        if self.wake_service:
+            self.wake_service.stop()
 
 
 def make_server(port: int = 8765, *, peer_host: str = "0.0.0.0", peer_port: int = PEER_PORT,
-                share: bool | None = None) -> tuple[ThreadingHTTPServer, str, str]:
+                share: bool | None = None, wake: bool = False) -> tuple[ThreadingHTTPServer, str, str]:
     """起 HTTP 服务，返回 (server, token, url)。port=0 让系统随机分配（测试用）。
 
     share：None = 按上次在网页上的设置；True / False = 这次强制开 / 关团队连接。
+    wake：是否在这个进程里运行自动唤醒（kopitiam web 默认运行；测试里默认不跑）。
     """
     db.init_db()
     try:
@@ -62,13 +69,18 @@ def make_server(port: int = 8765, *, peer_host: str = "0.0.0.0", peer_port: int 
         except peer.PeerError as e:
             print(f"警告：{e}，团队连接没有打开")
     service.start_worker()
+    if wake:
+        srv.wake_service = WakeService()
+        srv.wake_service.start()
     return srv, token, f"http://127.0.0.1:{srv.server_address[1]}/?t={token}"
 
 
 def run(port: int = 8765, open_browser: bool = True, *, peer_host: str = "0.0.0.0",
-        peer_port: int = PEER_PORT, share: bool | None = None) -> None:
-    srv, token, url = make_server(port, peer_host=peer_host, peer_port=peer_port, share=share)
+        peer_port: int = PEER_PORT, share: bool | None = None, wake: bool = True) -> None:
+    srv, token, url = make_server(port, peer_host=peer_host, peer_port=peer_port, share=share, wake=wake)
     print(f"kopitiam web 已启动：{url}")  # 网页进程不是 MCP，可以往 stdout 打印
+    if wake:
+        print("自动唤醒已开启（网页上可以暂停；不要的话加 --no-wake）")
     svc = srv.peer_service
     if svc.sharing:
         addrs = ", ".join(f"{ip}:{svc.bound_port}" for ip in peer.local_addresses()) or f"本机IP:{svc.bound_port}"
@@ -136,11 +148,15 @@ class _Handler(BaseHTTPRequestHandler):
             chat = Chat()
             msgs = self._with_urls(chat.messages_after(after, 200))
             return self._json({"agents": chat.agents_brief(), "messages": msgs,
-                               "deliveries": chat.delivery_updates()})
+                               "deliveries": chat.delivery_updates(), "wake": wake_service.overview()})
         if u.path == "/api/team":
             if not self._token_header_ok():
                 return self._deny()
             return self._json(self._team())
+        if u.path == "/api/wake":
+            if not self._token_header_ok():
+                return self._deny()
+            return self._json(wake_service.overview())
         if u.path == "/api/messages":
             if not self._token_header_ok():
                 return self._deny()
@@ -168,15 +184,45 @@ class _Handler(BaseHTTPRequestHandler):
             return self._api_upload(parse_qs(u.query))
         if u.path == "/api/forget":
             return self._api_forget()
-        if u.path in self._TEAM_POSTS:
+        handler = self._TEAM_POSTS.get(u.path) or self._WAKE_POSTS.get(u.path)
+        if handler:
             data = self._read_json()
             if data is None:
                 return
             try:
-                return self._json({"ok": True} | (self._TEAM_POSTS[u.path](self, data) or {}))
-            except peer.PeerError as e:
+                return self._json({"ok": True} | (handler(self, data) or {}))
+            except (peer.PeerError, ValueError) as e:
                 return self._json({"ok": False, "message": f"错误：{e}"})
         return self._deny(404)
+
+    # ---- 自动唤醒 ----
+
+    def _w_pause(self, data: dict) -> dict:
+        detector.set_paused(bool(data.get("paused")))
+        return wake_service.overview()
+
+    def _w_rounds(self, data: dict) -> dict:
+        try:
+            n = int(data.get("n"))
+        except (TypeError, ValueError):
+            raise ValueError("来回上限要填数字") from None
+        detector.set_max_rounds(n)
+        return wake_service.overview() | {"message": f"已保存：agent 之间最多连续 {n} 个来回" if n else
+                                          "已保存：只有你发的消息才会叫醒 agent"}
+
+    def _w_agent(self, data: dict) -> dict:
+        name = str(data.get("name") or "")
+        row = next((a for a in Chat().agents_brief() if a["name"] == name), None)
+        if row is None or row["kind"] in ("human", "remote"):
+            raise ValueError(f"找不到 agent：{name}")
+        detector.set_enabled(row["id"], bool(data.get("enabled")))
+        return wake_service.overview()
+
+    _WAKE_POSTS = {
+        "/api/wake/pause": _w_pause,
+        "/api/wake/rounds": _w_rounds,
+        "/api/wake/agent": _w_agent,
+    }
 
     # ---- 团队 ----
 
@@ -488,6 +534,11 @@ details.offline > summary:hover { color:var(--ink-2); }
 .bot .light { fill:var(--muted); }
 .bot .eye, .bot .mouth, .bot .lids, .bot .eyes { transform-box:fill-box; transform-origin:center; }
 .bot.on .light { fill:var(--ok); animation:beacon 2.4s ease-in-out infinite; animation-delay:var(--d); }
+/* 被自动唤醒：一跳，天线灯闪成琥珀色 */
+@keyframes jolt { 0%, 100% { transform:none; } 35% { transform:translateY(-3px) scale(1.07); } 70% { transform:scale(.97); } }
+@keyframes zap { 0%, 100% { fill:var(--ok); } 50% { fill:#ffb020; } }
+.bot.woke svg { animation:jolt .55s cubic-bezier(.3, 1.6, .5, 1) 2; }
+.bot.woke .light { animation:zap .3s linear 8; }
 .bot.on .lids { animation:blink 5.2s infinite; animation-delay:var(--d); }
 .bot.on .eyes { animation:look 9s ease-in-out infinite; animation-delay:var(--d2); }
 .bot.on .face { animation:bob 3.6s ease-in-out infinite; animation-delay:var(--d2); }
@@ -506,6 +557,14 @@ details.offline > summary:hover { color:var(--ink-2); }
 .agent .name { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .kind { flex-shrink:0; padding:0 6px; border-radius:5px; font-size:11px; line-height:17px; color:var(--ink-2); background:var(--hover); }
 .agent:hover .kind, .agent.active .kind { background:var(--panel); }
+/* 头像右下角的小闪电：收到点名消息会被自动唤醒（灰 = 暂停 / 没在运行，琥珀 = 来回超过上限） */
+.wk { position:absolute; right:-4px; bottom:-3px; z-index:1; display:grid; place-items:center; width:15px; height:15px;
+  border-radius:50%; background:var(--panel); box-shadow:0 0 0 1.5px var(--panel); color:var(--ok); }
+.wk svg { width:10px; height:10px; fill:currentColor; stroke-width:1.2; }
+.wk.idle { color:var(--muted); }
+.wk.limit { color:#e5a00d; }
+.agent:hover .wk, .agent.active .wk { background:var(--hover); box-shadow:0 0 0 1.5px var(--hover); }
+.agent.active .wk { background:var(--panel); box-shadow:0 0 0 1.5px var(--panel); }
 .agent .cwd { margin-top:1px; font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .agent .add {
   flex-shrink:0; width:28px; height:28px; display:grid; place-items:center; cursor:pointer;
@@ -519,9 +578,10 @@ details.offline > summary:hover { color:var(--ink-2); }
 
 /* 主题：默认收起，只留一个按钮，点开才弹出 */
 #themes { position:relative; flex-shrink:0; padding:8px 10px 12px; border-top:1px solid var(--line); }
-#themeBtn { width:100%; display:flex; align-items:center; gap:9px; padding:8px 10px; border:0; border-radius:10px; background:transparent; color:var(--ink-2); font-size:13px; cursor:pointer; }
-#themeBtn:hover { background:var(--hover); color:var(--ink); }
-#themeBtn .cur { margin-left:auto; font-size:12px; color:var(--muted); }
+.sidebtn { width:100%; display:flex; align-items:center; gap:9px; padding:8px 10px; border:0; border-radius:10px; background:transparent; color:var(--ink-2); font-size:13px; cursor:pointer; }
+.sidebtn:hover { background:var(--hover); color:var(--ink); }
+.sidebtn .cur { margin-left:auto; font-size:12px; color:var(--muted); }
+.sidebtn .cur.warn { color:#e5a00d; }
 #themePop {
   position:absolute; left:10px; right:10px; bottom:calc(100% - 2px); z-index:30;
   display:grid; grid-template-columns:1fr 1fr; gap:2px; padding:8px;
@@ -617,6 +677,9 @@ main.page > #convbar, main.page > #conn, main.page > #stream, main.page > #compo
 .prow .info { flex:1; min-width:0; }
 .prow .name { font-weight:600; }
 .prow .cwd { font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.prow .cwd.warn { color:#e5a00d; }
+.prow .line1 { display:flex; align-items:center; gap:6px; }
+.rounds { flex:0 0 84px; min-width:0; }
 .fwd-preview { margin:8px 0 4px; padding:10px 12px; border-left:3px solid var(--line); border-radius:6px; background:var(--hover); font-size:13px; color:var(--ink-2); white-space:pre-wrap; word-break:break-word; }
 .pick { display:flex; flex-direction:column; gap:2px; max-height:300px; overflow-y:auto; margin:10px 0; }
 .pick-row { display:flex; align-items:center; gap:10px; padding:7px 8px; border-radius:10px; cursor:pointer; }
@@ -719,7 +782,8 @@ main.page > #convbar, main.page > #conn, main.page > #stream, main.page > #compo
   <div class="brand"><span class="mark" data-logo></span><div><div class="logo">kopitiam</div><div class="sub" id="brandsub">本地聊天室</div></div></div>
   <div id="agents"></div>
   <div id="themes">
-    <button id="themeBtn" aria-haspopup="true"><span data-icon="palette"></span>主题<span class="cur" id="themeCur"></span></button>
+    <button id="wakeBtn" class="sidebtn"><span data-icon="bolt"></span>自动唤醒<span class="cur" id="wakeCur"></span></button>
+    <button id="themeBtn" class="sidebtn" aria-haspopup="true"><span data-icon="palette"></span>主题<span class="cur" id="themeCur"></span></button>
     <div id="themePop" hidden></div>
   </div>
 </aside>
@@ -804,6 +868,7 @@ const ICONS = {
   fwd: '<path d="M14 5l6 6-6 6"/><path d="M20 11H10a6 6 0 0 0-6 6v2"/>',
   clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
   palette: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.8-.8 1.8-1.8 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.8 1.8-1.8H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11.5" r="1"/><circle cx="10" cy="7.5" r="1"/><circle cx="14.5" cy="7.5" r="1"/>',
+  bolt: '<path d="M13 3L5 13.5h6L10 21l8-10.5h-6z"/>',
 };
 const LOGO = '<path d="M6 13h17v6a7 7 0 0 1-7 7h-3a7 7 0 0 1-7-7z"/><path d="M23 15h1.5a3.5 3.5 0 0 1 0 7H22.4"/><path d="M11.5 9.5c0-1.6 1.6-1.6 1.6-3.2s-1.6-1.6-1.6-3.2"/><path d="M17 9.5c0-1.6 1.6-1.6 1.6-3.2S17 4.7 17 3.1"/>';
 
@@ -1021,6 +1086,95 @@ async function renderTeam(body) {
   body.append(s1, s2, s3, s4, s5);
 }
 
+// ---- 自动唤醒：总开关、来回上限、每个 agent 的开关 ----
+let wakeInfo = null;
+const lastWoken = {};
+
+function renderWakeBtn() {
+  const c = $("wakeCur"), w = wakeInfo;
+  c.textContent = !w ? "" : !w.running ? "未运行" : w.paused ? "已暂停" : "开启";
+  c.classList.toggle("warn", !!w && (!w.running || w.paused));
+}
+
+function wakeBadge(name) {  // 侧栏名字后面的小闪电：这个 agent 收到点名消息会被叫醒
+  const w = wakeInfo && wakeInfo.agents[name];
+  if (!w || w.reason || !w.enabled) return null;
+  const b = icon("bolt", 13);
+  b.classList.add("wk");
+  if (!wakeInfo.running || wakeInfo.paused) {
+    b.classList.add("idle");
+    b.title = wakeInfo.paused ? "自动唤醒已暂停" : "自动唤醒没有在运行";
+  } else if (w.limited) {
+    b.classList.add("limit");
+    b.title = w.note;
+  } else {
+    b.title = "收到点名消息会被自动唤醒" + (w.note ? "\\n最近：" + w.note : "");
+  }
+  return b;
+}
+
+async function openWake() {
+  closeSide();
+  const body = el("div", "team");
+  openModal("自动唤醒", body);
+  renderWake(body, await api("/api/wake"));
+}
+
+function renderWake(body, w) {
+  if (!w || !w.agents) return;
+  wakeInfo = w;
+  renderWakeBtn();
+  body.textContent = "";
+
+  const s1 = tsec("收到消息时叫醒 agent", "有人点名发消息给开着的 agent 时，叫它自己去读、去处理。发给所有人的广播不会叫醒。");
+  const sw = el("button", "switch" + (w.paused ? "" : " on"));
+  sw.setAttribute("aria-label", "自动唤醒");
+  sw.onclick = async () => renderWake(body, await post("/api/wake/pause", { paused: !w.paused }));
+  s1.append(trow(el("span", "grow", w.paused ? "已暂停" : "已开启"), sw));
+  if (!w.running) s1.append(el("div", "merr", "现在没有在运行：kopitiam web 是不是用 --no-wake 启动的？也可以另开一个终端运行 kopitiam wake。"));
+
+  const s2 = tsec("agent 之间的来回上限",
+    "从你上次说话算起，两个 agent 之间连续来回超过这个次数，就不再互相叫醒（消息照常送到）。默认 " +
+    w.default_rounds + "；填 0 = 只有你发的消息才会叫醒 agent。");
+  const n = el("input", "tin rounds");
+  n.type = "number"; n.min = 0; n.max = 100; n.value = w.max_rounds;
+  const save = el("button", "btn", "保存");
+  save.onclick = async () => {
+    const out = await post("/api/wake/rounds", { n: n.value });
+    if (!out.ok) return flash(s2, out);
+    renderWake(body, out);
+    flash(body.querySelector(".tsec:nth-child(2)"), out);
+  };
+  s2.append(trow(n, el("span", "mnote grow", "个来回"), save));
+
+  const names = Object.keys(w.agents);
+  const s3 = tsec("开着的 agent · " + names.length);
+  if (!names.length) s3.append(el("div", "mnote", "现在没有开着的 agent（没开着的不会被叫醒）"));
+  for (const name of names) {
+    const a = w.agents[name];
+    const r = el("div", "prow");
+    const info = el("div", "info");
+    const line = el("div", "line1");
+    line.append(el("span", "name", name), el("span", "kind", kindLabel(a.kind)));
+    info.append(line, el("div", "cwd" + (a.warn ? " warn" : ""), a.reason || a.note || "可以叫醒"));
+    info.title = a.reason || a.note || "";
+    r.append(avatar(name, true, true, a.kind), info);
+    if (a.supported) {  // 还没适配的 agent 不给开关，免得以为它会被叫醒
+      const s = el("button", "switch" + (a.enabled ? " on" : ""));
+      s.setAttribute("aria-label", name + " 的自动唤醒");
+      s.onclick = async () => renderWake(body, await post("/api/wake/agent", { name, enabled: !a.enabled }));
+      r.append(s);
+    }
+    s3.append(r);
+  }
+
+  const s4 = el("div", "tsec");
+  s4.append(el("div", "mnote",
+    "Claude Code：运行一次 kopitiam setup claude，然后重开 Claude（不需要登录 claude.ai 账号）。Codex、pi、dsh 还在适配中。" +
+    "被叫醒的 agent 用的是它当前会话的权限：开了跳过权限的会话，别的 agent 也能让它执行命令。"));
+  body.append(s1, s2, s3, s4);
+}
+
 // ---- 转发：把一条消息转给本机 agent 或同事 ----
 function openForward(m) {
   const body = el("div", "fwd");
@@ -1077,11 +1231,18 @@ function startTalk(name) {
   refreshTalk();
   setTimeout(refreshTalk, 2700);
 }
+const woke = {};  // 刚被自动唤醒的 agent：头像跳一下、天线灯闪
+function startWoke(name) {
+  woke[name] = Date.now() + 2400;
+  refreshTalk();
+  setTimeout(refreshTalk, 2500);
+}
 function refreshTalk() {
   const now = Date.now();
   for (const row of document.querySelectorAll(".agent")) {
     const b = row.querySelector(".bot");
     if (b) b.classList.toggle("talk", (talking[row.dataset.name] || 0) > now);
+    if (b) b.classList.toggle("woke", (woke[row.dataset.name] || 0) > now);
   }
   const cb = $("convAvatar").querySelector(".bot");
   if (cb) cb.classList.toggle("talk", (talking[selected] || 0) > now);
@@ -1102,7 +1263,7 @@ function fmtSize(n) {
 
 function renderAgents(agents) {
   agentsByName = Object.fromEntries(agents.map(a => [a.name, a]));
-  const j = JSON.stringify(agents) + "|" + selected;
+  const j = JSON.stringify(agents) + "|" + selected + "|" + JSON.stringify(wakeInfo);
   if (j === agentJson) return;
   agentJson = j;
   const shownAgents = agents.filter(a => !a.hidden);  // 离线超过 7 天的收进「已隐藏」子页面
@@ -1221,6 +1382,9 @@ function agentRow(a) {
   info.append(line1, el("div", "cwd", sub));
   const av = avatar(a.name, a.online, false, a.kind);
   if ((talking[a.name] || 0) > Date.now()) av.classList.add("talk");
+  if ((woke[a.name] || 0) > Date.now()) av.classList.add("woke");
+  const wb = wakeBadge(a.name);
+  if (wb) av.append(wb);
   div.append(av, info);
   if (a.name !== "user") {
     const add = el("button", "add");
@@ -1385,7 +1549,13 @@ async function poll() {
   const atBottom = s.scrollTop + s.clientHeight >= s.scrollHeight - 40;
   for (const m of (st.messages || [])) addMessage(m);
   for (const [id, d] of Object.entries(st.deliveries || {})) setDelivery(id, d);
+  wakeInfo = st.wake || null;
+  renderWakeBtn();
   renderAgents(st.agents || []);
+  for (const [name, a] of Object.entries((wakeInfo || {}).agents || {})) {
+    if (name in lastWoken && a.woken_at && a.woken_at !== lastWoken[name]) startWoke(name);
+    lastWoken[name] = a.woken_at;
+  }
   updateEmpty();
   if ((st.messages || []).length && atBottom) s.scrollTop = s.scrollHeight;
   booted = true;
@@ -1494,6 +1664,7 @@ document.addEventListener("keydown", (e) => {
   else if (!$("hiddenPage").hidden) closeHidden();
 });
 $("mclose").onclick = closeModal;
+$("wakeBtn").onclick = openWake;
 $("modal").onclick = (e) => { if (e.target === $("modal")) closeModal(); };  // 点弹窗外面关闭
 $("hiddenBack").onclick = closeHidden;
 $("send").onclick = send;

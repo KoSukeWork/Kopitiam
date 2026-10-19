@@ -1,0 +1,347 @@
+"""自动唤醒：感知模块的规则、Claude 适配器（信号文件 + hook）、安装 hook。"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from contextlib import closing
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from kopitiam import db
+from kopitiam.config import wake_dir
+from kopitiam.db import Chat
+from kopitiam.wake import claude, detector, service
+
+
+def _scan():
+    """所有 agent 都能叫醒的假适配器：只看感知模块的判断。"""
+    return detector.scan(lambda agent: None)
+
+
+def _woken(calls) -> dict[str, list[int]]:
+    return {c.name: c.message_ids for c in calls}
+
+
+@pytest.fixture
+def room(home):
+    db.init_db()
+    a = db.claim("claude", cwd=str(home), name="A", pid=os.getpid())
+    b = db.claim("codex", cwd=str(home), name="B", pid=os.getpid())
+    user = db.user_id()
+    _scan()  # 第一次感知：记下起点
+    return a, b, user
+
+
+def _send(me: int, to: str | list[str], text: str = "hi") -> int:
+    out = Chat().send(me, text, [to] if isinstance(to, str) else to)
+    assert out.startswith("已发送 #"), out
+    return int(out.split("#")[1].split()[0])
+
+
+def _note(agent_id: int) -> str:
+    return detector.states()[agent_id]["note"]
+
+
+# ---- 感知模块 ----
+
+
+def test_old_messages_are_not_woken(home):
+    db.init_db()
+    a = db.claim("claude", cwd=str(home), name="A", pid=os.getpid())
+    _send(db.user_id(), "A")  # 感知开始之前的消息
+    assert _scan() == []
+    assert _scan() == []
+    m = _send(db.user_id(), "A")
+    assert _woken(_scan()) == {"A": [m]}
+    assert detector.states()[a]["enabled"]
+
+
+def test_user_message_wakes_once_until_read(room):
+    a, b, user = room
+    m1 = _send(user, "A", "第一条")
+    calls = _scan()
+    assert _woken(calls) == {"A": [m1]}
+    assert "1 条新消息（来自 user）" in calls[0].text and "read" in calls[0].text
+    m2 = _send(user, "A", "第二条")
+    assert _scan() == []  # 上一批还没读：不重复叫
+    Chat().read(a)
+    m3 = _send(user, "A", "第三条")
+    assert _woken(_scan()) == {"A": [m3]}  # 读过以后，新消息再叫；读掉的 m2 不算
+    assert m2 < m3
+
+
+def test_broadcast_and_own_messages_do_not_wake(room):
+    a, b, user = room
+    _send(user, [])  # 发给所有人
+    _send(user, "all")
+    _send(a, "A")  # 发给自己
+    assert _scan() == []
+
+
+def test_offline_agent_is_not_woken_and_gets_no_backlog(room, home):
+    a, b, user = room
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        c = db.claim("pi", cwd=str(home), name="C", pid=proc.pid)
+        _scan()
+        proc.kill()
+        proc.wait()
+        _send(user, "C")
+        assert _scan() == []
+        db.claim("pi", cwd=str(home), name="C", pid=os.getpid())  # 重新上线
+        assert _scan() == []  # 离线时的消息不补叫
+        m = _send(user, "C")
+        assert _woken(_scan()) == {"C": [m]}
+    finally:
+        proc.kill()
+
+
+def test_pause_skips_and_resume_has_no_backlog(room):
+    a, b, user = room
+    detector.set_paused(True)
+    _send(user, "A")
+    assert _scan() == []
+    detector.set_paused(False)
+    assert _scan() == []
+    m = _send(user, "A")
+    assert _woken(_scan()) == {"A": [m]}
+
+
+def test_disabled_agent_is_not_woken(room):
+    a, b, user = room
+    detector.set_enabled(a, False)
+    _send(user, "A")
+    assert _scan() == []
+    detector.set_enabled(a, True)
+    m = _send(user, "A")
+    assert _woken(_scan()) == {"A": [m]}
+
+
+def _ping_pong(a: int, b: int, n: int) -> list[tuple[str, list[int]]]:
+    """A、B 轮流发 n 条，每条之后感知一次、收件人读掉；返回每次叫醒的情况。"""
+    woken = []
+    for i in range(n):
+        me, to, to_id = (a, "B", b) if i % 2 == 0 else (b, "A", a)
+        _send(me, to, f"第 {i + 1} 条")
+        woken += [(c.name, c.message_ids) for c in _scan()]
+        Chat().read(to_id)
+    return woken
+
+
+def test_agent_ping_pong_stops_after_max_rounds(room):
+    a, b, user = room
+    detector.set_max_rounds(2)  # 2 个来回 = 4 条
+    woken = _ping_pong(a, b, 6)
+    assert [w[0] for w in woken] == ["B", "A", "B", "A"]
+    assert "连续来回超过 2 次" in _note(b)
+    # 用户说一句话就重新计数
+    _send(user, "B", "继续")
+    assert [c.name for c in _scan()] == ["B"]
+    Chat().read(b)
+    assert [w[0] for w in _ping_pong(a, b, 2)] == ["B", "A"]
+
+
+def test_default_max_rounds_is_six(room):
+    a, b, user = room
+    assert detector.max_rounds() == 6
+    assert len(_ping_pong(a, b, 14)) == 12
+
+
+def test_max_rounds_zero_only_user_wakes(room):
+    a, b, user = room
+    detector.set_max_rounds(0)
+    _send(a, "B")
+    assert _scan() == []
+    m = _send(user, "B")
+    assert _woken(_scan()) == {"B": [m]}
+    with pytest.raises(ValueError):
+        detector.set_max_rounds(-1)
+
+
+def test_chain_resets_after_idle_gap(room):
+    a, b, user = room
+    detector.set_max_rounds(1)
+    assert len(_ping_pong(a, b, 2)) == 2
+    old = (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")
+    with closing(db.connect()) as c:
+        c.execute("UPDATE messages SET created_at=?", (old,))  # 两个 agent 一小时没说话
+    assert len(_ping_pong(a, b, 2)) == 2
+
+
+def test_user_message_wakes_even_when_pair_is_over_limit(room):
+    a, b, user = room
+    detector.set_max_rounds(0)
+    m_agent = _send(a, "B")
+    m_user = _send(user, "B")
+    assert _woken(_scan()) == {"B": [m_user]}  # 只叫 user 那条，agent 那条超过上限
+    assert m_agent < m_user
+
+
+def test_check_reason_is_recorded(room):
+    a, b, user = room
+    _send(user, "B")
+    assert detector.scan(lambda agent: "装不上" if agent["name"] == "B" else None) == []
+    assert _note(b) == "装不上"
+
+
+# ---- service + Claude 适配器 ----
+
+
+def test_claude_adapter_end_to_end(room, monkeypatch):
+    a, b, user = room
+    env = {"CLAUDE_PID": str(os.getpid())}
+    start = json.loads(claude.hook_start(env))
+    sig = Path(start["hookSpecificOutput"]["watchPaths"][0])
+    assert sig == claude.signal_path(os.getpid()) and sig.exists() and sig.parent == wake_dir()
+
+    m = _send(user, "A", "帮我看下")
+    results = service.run_once()
+    assert [(c.name, err) for c, err in results] == [("A", None)]
+    assert "已叫醒" in _note(a)
+    body = json.loads(sig.read_text(encoding="utf-8"))
+    assert body["id"] == f"{a}-{m}"
+
+    event = json.dumps({"file_path": str(sig), "event": "change"})
+    code, text = claude.hook_wake(event, env)
+    assert code == 2 and "kopitiam：你有 1 条新消息（来自 user）" in text
+    assert claude.hook_wake(event, env) == (0, "")  # 同一次叫醒触发多次 FileChanged：只算一次
+
+    # B 是 codex：还没有适配器，记下原因
+    _send(user, "B")
+    assert service.run_once() == []
+    assert "还不支持" in _note(b)
+
+
+def test_claude_hook_ignores_other_files_and_unlink(home):
+    env = {"CLAUDE_PID": str(os.getpid())}
+    claude.hook_start(env)
+    sig = claude.signal_path(os.getpid())
+    sig.write_text(json.dumps({"id": "x-1", "text": "hello"}), encoding="utf-8")
+    other = home / "other.txt"
+    other.write_text("x", encoding="utf-8")
+    assert claude.hook_wake(json.dumps({"file_path": str(other), "event": "change"}), env) == (0, "")
+    assert claude.hook_wake(json.dumps({"file_path": str(sig), "event": "unlink"}), env) == (0, "")
+    assert claude.hook_wake("not json", env) == (0, "")
+    assert claude.hook_wake(json.dumps({"file_path": str(sig), "event": "change"}), env) == (2, "hello")
+
+
+def test_claude_check_and_failed_wake_can_retry(room):
+    a, b, user = room
+    _send(user, "A")
+    assert service.run_once() == []  # 没有信号文件 = 没装 hook
+    assert "kopitiam setup claude" in _note(a)
+
+    claude.hook_start({"CLAUDE_PID": str(os.getpid())})
+    m = _send(user, "A")
+    claude.signal_path(os.getpid()).unlink()  # 感知以后、叫醒之前 Claude 关掉了
+    calls = detector.scan(lambda agent: None)
+    assert _woken(calls) == {"A": [m]}
+    with pytest.raises(RuntimeError):
+        claude.wake(calls[0])
+    detector.record(calls[0], "信号文件不见了")
+    assert "叫醒失败" in _note(a)
+    claude.hook_start({"CLAUDE_PID": str(os.getpid())})
+    m2 = _send(user, "A")
+    assert [c.name for c, err in service.run_once()] == ["A"]  # 失败的那次不挡住下一次
+
+
+def test_cleanup_removes_dead_signal_files(home):
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    wake_dir().mkdir(parents=True)
+    dead = claude.signal_path(proc.pid)
+    dead.write_text("", encoding="utf-8")
+    claude.hook_start({"CLAUDE_PID": str(os.getpid())})
+    assert not dead.exists() and claude.signal_path(os.getpid()).exists()
+
+
+# ---- 安装 hook ----
+
+
+def test_install_keeps_other_settings_and_is_idempotent(home):
+    settings = home / "claude" / "settings.json"
+    settings.parent.mkdir()
+    exe = r"C:\Users\me\.local\bin\kopitiam.exe"
+    other = {"hooks": [{"type": "command", "command": "echo hi"}]}
+    settings.write_text(json.dumps({"model": "opus", "hooks": {"SessionStart": [other]}}), encoding="utf-8")
+
+    claude.install(settings, exe)
+    claude.install(settings, exe)  # 再装一次不会重复
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["model"] == "opus"
+    assert data["hooks"]["SessionStart"][0] == other and len(data["hooks"]["SessionStart"]) == 2
+    wake = data["hooks"]["FileChanged"]
+    assert len(wake) == 1 and wake[0]["hooks"][0]["asyncRewake"] is True
+    assert wake[0]["hooks"][0]["args"] == ["hook", "claude-wake"]
+    assert (settings.parent / "settings.json.bak").exists()
+
+    claude.install(settings, exe, remove=True)
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["hooks"] == {"SessionStart": [other]}
+
+
+def test_install_creates_settings_file(home):
+    settings = home / "new" / "settings.json"
+    claude.install(settings, r"C:\x\kopitiam.exe")
+    assert set(json.loads(settings.read_text(encoding="utf-8"))["hooks"]) == {"SessionStart", "FileChanged"}
+
+
+# ---- 网页：总开关、来回上限、每个 agent 的开关 ----
+
+
+def test_web_wake_controls(home):
+    import threading
+    import urllib.request
+
+    from kopitiam import web
+
+    srv, token, url = web.make_server(port=0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+
+    def call(path, data=None):
+        req = urllib.request.Request(base + path, headers={"X-Token": token, "Content-Type": "application/json"},
+                                     data=None if data is None else json.dumps(data).encode("utf-8"),
+                                     method="GET" if data is None else "POST")
+        with urllib.request.urlopen(req) as r:
+            return json.loads(r.read().decode("utf-8"))
+
+    try:
+        a = db.claim("claude", cwd=str(home), name="A", pid=os.getpid())
+        w = call("/api/wake")
+        assert w["running"] is False  # 测试里的网页没跑自动唤醒
+        assert w["paused"] is False and w["max_rounds"] == 6 == w["default_rounds"]
+        assert "kopitiam setup claude" in w["agents"]["A"]["reason"]
+        claude.hook_start({"CLAUDE_PID": str(os.getpid())})
+        assert call("/api/state?after=0")["wake"]["agents"]["A"]["reason"] is None
+
+        assert call("/api/wake/pause", {"paused": True})["paused"] is True and detector.paused()
+        out = call("/api/wake/rounds", {"n": 3})
+        assert out["ok"] and out["max_rounds"] == 3 and "3 个来回" in out["message"]
+        assert call("/api/wake/rounds", {"n": "x"})["ok"] is False
+        assert call("/api/wake/rounds", {"n": 101})["ok"] is False
+        assert call("/api/wake/agent", {"name": "A", "enabled": False})["agents"]["A"]["enabled"] is False
+        assert call("/api/wake/agent", {"name": "user", "enabled": False})["ok"] is False
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_service_heartbeat(home):
+    db.init_db()
+    s = service.WakeService(interval=0.05)
+    s.start()
+    try:
+        import time
+        for _ in range(100):
+            if service.overview()["running"]:
+                break
+            time.sleep(0.05)
+        assert service.overview()["running"]
+    finally:
+        s.stop()
+    assert not service.overview()["running"]

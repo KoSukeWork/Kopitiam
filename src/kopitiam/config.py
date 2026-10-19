@@ -26,6 +26,11 @@ PEER_CLOCK_SKEW = 300              # 签名里的时间戳允许误差（秒）�
 PEER_ONLINE_WINDOW = 90            # 最近一次成功联系在这个时间内，就算对方在线（秒）
 FORWARD_EXTRA = 400                # 转发时正文可以比 TEXT_MAX 多出的长度（放「转发自…」那一行）
 
+# 自动唤醒（wake/）：有人点名发消息给开着的 agent 时，叫它自己去 read
+WAKE_INTERVAL = 1.5                # 感知模块多久查一次新消息（秒）
+WAKE_MAX_ROUNDS = 6                # 两个 agent 之间自动唤醒的连续来回上限（默认值，网页上可以改；0 = agent 之间不叫醒）
+WAKE_CHAIN_IDLE = 30 * 60          # 两个 agent 之间这么久没说话，来回次数重新计数（秒）
+
 # 名字规则：1-32 个字符，\w（含中文）、点、@、横线；不分大小写唯一。
 NAME_RE = re.compile(r"^[\w.@\-]{1,32}$")
 RESERVED_NAMES = frozenset({"all", "所有人"})
@@ -52,6 +57,11 @@ def files_dir() -> Path:
 
 def db_path() -> Path:
     return data_dir() / DB_NAME
+
+
+def wake_dir() -> Path:
+    """唤醒信号文件（claude-<pid>.signal 等）放在这里，agent 那边的 hook / 扩展监视它们。"""
+    return data_dir() / "wake"
 
 
 def staging_dir() -> Path:
