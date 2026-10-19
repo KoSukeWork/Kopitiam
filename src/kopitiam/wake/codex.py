@@ -17,12 +17,15 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 from ..config import wake_dir
-from . import hookfile, signals
+from . import hookfile, notify, signals
 
-HANDED_OFF = "已交给 Codex：它这一轮做完会接着读（闲着的话要等它下一轮）"
+HANDED_OFF = "已交给 Codex：它这一轮做完会接着读（闲着的话会弹通知提醒你）"
+REMIND_AFTER = 45  # 交出去这么久还没被接走，就提醒用户（秒）
+IDLE_FOR = 30      # 那个对话的记录文件这么久没动 = Codex 闲着（秒）
 
 
 def _exe(pid: int | None) -> str:
@@ -64,6 +67,37 @@ def wake(call) -> str | None:
         return None
     signals.write("codex", call, thread=call.thread_id)
     return HANDED_OFF
+
+
+def remind() -> None:
+    """Codex 闲着时叫不醒：交出去的提示一直没被接走、那个对话也没在动，就弹 Windows 通知提醒用户。
+
+    点通知打开那个对话（codex://threads/<对话ID>）；用户随便跟它说一句，这一轮结束时 Stop hook 就会接力。
+    每一批只提醒一次。感知模块的后台线程定时调用。
+    """
+    import psutil
+
+    from ..export.codex import find_by_thread
+
+    now = time.time()
+    for f in wake_dir().glob("codex-*.signal"):
+        obj = signals.read(f)
+        if not obj or signals.taken(obj["id"]) or now - f.stat().st_mtime < REMIND_AFTER:
+            continue
+        pid = f.stem.rpartition("-")[2]
+        if not pid.isdigit() or not psutil.pid_exists(int(pid)):
+            continue  # Codex 已经关了
+        thread = obj.get("thread")
+        rollout = find_by_thread(thread) if thread else None
+        if rollout and now - rollout.stat().st_mtime < IDLE_FOR:
+            continue  # 还在忙：这一轮做完会自己接力
+        if not signals.take(f"remind-{obj['id']}"):
+            continue  # 这一批已经提醒过
+        who = "、".join(obj.get("senders") or []) or "有人"
+        notify.toast(f"{obj.get('name') or 'codex'} 有新消息在等它",
+                     f"{who} 发来 {obj.get('count') or 1} 条。Codex 闲着时叫不醒："
+                     "点这里打开那个对话，随便跟它说一句，它这一轮做完就会去读。",
+                     f"codex://threads/{thread}" if thread else "codex://")
 
 
 # ---- hook（Codex 那边调用） ----
@@ -147,5 +181,11 @@ def _is_ours(group) -> bool:
 
 
 def install(path: Path, exe: str, *, remove: bool = False) -> str:
-    """只增删 kopitiam 自己的两个 hook，不动别的；改之前先备份成 hooks.json.bak。"""
-    return hookfile.merge(path, hook_entries(exe), _is_ours, remove=remove)
+    """只增删 kopitiam 自己的两个 hook，不动别的；改之前先备份成 hooks.json.bak。
+    顺便登记 Windows 通知的发送者名字（Codex 闲着时靠通知提醒用户）。"""
+    done = hookfile.merge(path, hook_entries(exe), _is_ours, remove=remove)
+    if remove:
+        notify.unregister()
+    else:
+        notify.register()
+    return done

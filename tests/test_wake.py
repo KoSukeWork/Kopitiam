@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -532,3 +533,65 @@ def test_codex_export_uses_thread_file(home, monkeypatch):
     db.set_thread(c, "abc-123")
     out = Chat().export_context(c)
     assert out.startswith("已导出") and rollout.name in out
+
+
+# ---- Codex 闲着时：弹 Windows 通知提醒用户 ----
+
+
+def test_toast_xml_escapes_and_links():
+    from kopitiam.wake import notify
+
+    xml = notify.toast_xml("a <b> & c", "正文", "codex://threads/x?a=1&b=2")
+    assert 'activationType="protocol"' in xml and "a &lt;b&gt; &amp; c" in xml
+    assert 'launch="codex://threads/x?a=1&amp;b=2"' in xml
+    assert "<toast>" in notify.toast_xml("t", "b")  # 没有链接：点了不打开东西
+
+
+def _old(path: Path, seconds: int) -> None:
+    t = time.time() - seconds
+    os.utime(path, (t, t))
+
+
+def test_codex_remind_when_idle_once(codex_room, toasts, monkeypatch):
+    from kopitiam.export import codex as codex_export
+
+    c, codex = codex_room
+    codex.hook_start()
+    _send(db.user_id(), "codex", "帮我 review")
+    service.run_once()
+    sig = signals_path("codex")
+    codex.remind()
+    assert toasts == []  # 刚交出去：先等它这一轮做完
+
+    _old(sig, 120)
+    rollout = Path(codex_export.ROOT) / "fake"  # 对话记录：最近还在动 = 在忙
+    monkeypatch.setattr(codex_export, "find_by_thread", lambda t: rollout)
+    rollout.parent.mkdir(parents=True, exist_ok=True)
+    rollout.write_text("{}", encoding="utf-8")
+    codex.remind()
+    assert toasts == []
+
+    _old(rollout, 120)  # 闲着了
+    codex.remind()
+    codex.remind()
+    assert len(toasts) == 1  # 同一批只提醒一次
+    title, body, link = toasts[0]
+    assert "codex 有新消息在等它" in title and "user 发来 1 条" in body
+    assert link == "codex://threads/thread-1"
+
+
+def test_codex_remind_skips_taken_signal(codex_room, toasts):
+    c, codex = codex_room
+    codex.hook_start()
+    _send(db.user_id(), "codex")
+    service.run_once()
+    codex.hook_stop(json.dumps({"session_id": "thread-1"}))  # 已经被 Stop hook 接走
+    _old(signals_path("codex"), 120)
+    codex.remind()
+    assert toasts == []
+
+
+def signals_path(kind: str) -> Path:
+    from kopitiam.wake import signals
+
+    return signals.path(kind, os.getpid())

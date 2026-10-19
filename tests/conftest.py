@@ -16,6 +16,18 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def toasts(monkeypatch):
+    """测试绝不弹真的 Windows 通知、不改注册表：记下来给测试检查。"""
+    from kopitiam.wake import notify
+
+    shown: list[tuple] = []
+    monkeypatch.setattr(notify, "toast", lambda *a: shown.append(a))
+    monkeypatch.setattr(notify, "register", lambda: None)
+    monkeypatch.setattr(notify, "unregister", lambda: None)
+    return shown
+
+
+@pytest.fixture(autouse=True)
 def home(monkeypatch):
     """每个测试一个独立的 KOPITIAM_HOME（函数里读环境变量，随时生效）。"""
     root = Path(tempfile.gettempdir()) / f"kopitiam-test-{uuid.uuid4().hex[:10]}"

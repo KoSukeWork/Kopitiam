@@ -29,7 +29,8 @@ def write(kind: str, call, **extra) -> None:
     p = path(kind, call.pid)
     if not p.exists():
         raise RuntimeError("信号文件不见了（agent 可能已经关掉）")
-    body = {"id": call.wake_id, "text": call.text, "upto": max(call.message_ids)} | extra
+    body = {"id": call.wake_id, "text": call.text, "upto": max(call.message_ids),
+            "name": call.name, "senders": call.senders, "count": len(call.message_ids)} | extra
     p.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
 
 
@@ -58,6 +59,10 @@ def take(wake_id: str) -> bool:
     except FileExistsError:
         return False
     return True
+
+
+def taken(wake_id: str) -> bool:
+    return (wake_dir() / "taken" / safe(str(wake_id))).exists()
 
 
 def cleanup() -> None:

@@ -178,6 +178,7 @@ kopitiam setup codex --remove  # 删掉
 原理（在 codex-cli 0.163 上验证过：对话这一轮结束时被接力，自己 `read`、再用 `send` 回复）：
 - **哪个对话**：一个 Codex 进程（桌面版、或者一个命令行窗口）管着好几个对话。Codex 每次调用 MCP 工具都会在 `_meta.threadId` 里带上当前对话 ID，kopitiam 记下最近一次的，只交给这个对话。
 - **怎么交**：`SessionStart` hook 建 `~/.kopitiam/wake/codex-<codex 进程号>.signal`；要叫醒时感知模块把提示写进去；`Stop` hook 在那个对话这一轮结束时看到提示，就返回 `{"decision": "block", "reason": 提示}`，Codex 接着去 `read`。别的对话结束时不交；用户在这期间已经让它读过了也不交。
+- **闲着时用通知提醒你**：交给 Codex 的提示 45 秒还没被接走、那个对话的记录文件 30 秒没动（说明它闲着），就弹一个 Windows 通知「codex 有新消息在等它」。点通知直接打开那个对话（`codex://threads/<对话ID>`），随便跟它说一句，它这一轮做完就会去读。每批只提醒一次；暂停自动唤醒时不提醒。通知的发送者名字「kopitiam」登记在 `HKCU\Software\Classes\AppUserModelId\Kopitiam`（`setup codex` 时写入，`--remove` 时删掉）。
 - **为什么叫不醒闲着的对话**：Codex 的 hooks 不能主动开始新回合（官方文档：后台 hook 结束「不会开始新的回合」）。`codex queue` 只能进到共享 app-server daemon 托管的对话，而桌面版和命令行窗口默认都用自己内置的服务；硬用的话 daemon 会另外加载一份同一个对话，两个进程同时写记录。所以只有 kopitiam 的 MCP 进程本身挂在 daemon 下面时，才改用 `codex queue`（这时闲着也能叫醒）。
 
 **规则**：
