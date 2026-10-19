@@ -56,12 +56,13 @@ export function apply(ctx) {
     if (!msg?.id || !msg.text || msg.id === lastId || !session) return;
     lastId = msg.id;
     try {
+      // 第二个参数 signal 是必填的（prompt 一开始就调用 signal.throwIfAborted()）
       await ctx.sessionController.prompt({
         requestId: `kopitiam-${msg.id}`,
         sessionId: session,
         mode: "queue",
         content: [{ type: "text", text: msg.text }],
-      });
+      }, AbortSignal.timeout(60_000));
     } catch (error) {
       ctx.logger.warn(`kopitiam-wake: 发不进会话 ${session}：${String(error)}`);
     }

@@ -692,7 +692,8 @@ const ctx = {
   on: (event, fn) => { handlers[event] = fn; },
   effect: (fn) => { disposers.push(fn()); },
   logger: { warn: (m) => warns.push(m) },
-  sessionController: { prompt: async (req) => { prompts.push(req); return { accepted: true }; } },
+  // 和 dsh 真的 SessionController.prompt 一样：第二个参数 signal 必填
+  sessionController: { prompt: async (req, signal) => { signal.throwIfAborted(); prompts.push(req); return { accepted: true }; } },
 };
 apply(ctx);
 const dir = join(process.env.KOPITIAM_HOME, "wake");
