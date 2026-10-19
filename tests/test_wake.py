@@ -656,6 +656,154 @@ def test_codex_remind_skips_taken_signal(codex_room, toasts):
     assert toasts == []
 
 
+# ---- Codex 桌面版：排进 Codex 的共享队列 ----
+
+# 和 Codex 的 queue_1.sqlite 一样（迁移 1、2 + 记录改动的触发器）
+QUEUE_SCHEMA = """
+CREATE TABLE _sqlx_migrations (version BIGINT PRIMARY KEY, description TEXT NOT NULL,
+    installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, success BOOLEAN NOT NULL,
+    checksum BLOB NOT NULL, execution_time BIGINT NOT NULL);
+INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+    VALUES (1, 'queued items', 1, x'00', 0), (2, 'queued thread revisions', 1, x'00', 0);
+CREATE TABLE queued_items (id TEXT PRIMARY KEY NOT NULL, thread_id TEXT NOT NULL, payload_json TEXT NOT NULL,
+    queue_order INTEGER NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+CREATE UNIQUE INDEX queued_items_thread_order_idx ON queued_items(thread_id, queue_order);
+CREATE TABLE queued_thread_revisions (revision INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL UNIQUE);
+CREATE TRIGGER queued_items_revision_after_insert AFTER INSERT ON queued_items BEGIN
+    INSERT INTO queued_thread_revisions (thread_id) VALUES (NEW.thread_id) ON CONFLICT(thread_id) DO UPDATE
+    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+END;
+"""
+
+
+@pytest.fixture
+def codex_queue(home, monkeypatch):
+    import sqlite3
+
+    ch = home / "codex-home"
+    ch.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(ch))
+    with closing(sqlite3.connect(ch / "queue_1.sqlite")) as c:
+        c.executescript(QUEUE_SCHEMA)
+    return ch / "queue_1.sqlite"
+
+
+def _queue_rows(path: Path) -> list[tuple]:
+    import sqlite3
+
+    with closing(sqlite3.connect(path)) as c:
+        return c.execute("SELECT id, thread_id, payload_json, queue_order FROM queued_items"
+                         " ORDER BY thread_id, queue_order").fetchall()
+
+
+def test_enqueue_writes_codex_format_once(codex_queue):
+    import sqlite3
+    import uuid
+
+    from kopitiam.wake import codex
+
+    codex.enqueue("t1", "你好", "9-20")
+    codex.enqueue("t1", "你好", "9-20")  # 同一次叫醒只排一次
+    codex.enqueue("t1", "再来", "9-21")
+    rows = _queue_rows(codex_queue)
+    assert [r[3] for r in rows] == [0, 1]  # 排在最后
+    assert json.loads(rows[0][2]) == {"UserInput": {
+        "content": [{"type": "text", "text": "你好", "text_elements": []}], "client_id": codex._client_id("9-20")}}
+    assert uuid.UUID(rows[0][0]).version == 7  # 和 Codex 自己的编号一样按时间排序
+    with closing(sqlite3.connect(codex_queue)) as c:  # 触发器记下改动，Codex 靠它发现队列变了
+        assert c.execute("SELECT COUNT(*) FROM queued_thread_revisions WHERE thread_id='t1'").fetchone()[0] == 1
+        assert codex.queued("t1", "9-20")
+        c.execute("DELETE FROM queued_items WHERE queue_order = 0")
+        c.commit()
+    assert not codex.queued("t1", "9-20") and codex.queued("t1", "9-21")
+
+
+def test_queue_refuses_unknown_format(codex_queue, home, monkeypatch):
+    import sqlite3
+
+    from kopitiam.wake import codex
+
+    assert codex.queue_problem() is None
+    with closing(sqlite3.connect(codex_queue)) as c:
+        c.execute("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)"
+                  " VALUES (3, 'new', 1, x'00', 0)")
+        c.commit()
+    assert "格式变了" in codex.queue_problem()
+    with pytest.raises(codex.QueueError):
+        codex.enqueue("t1", "你好", "9-20")
+    assert _queue_rows(codex_queue) == []
+    monkeypatch.setenv("CODEX_HOME", str(home / "nowhere"))
+    assert "没找到" in codex.queue_problem()
+    assert not (home / "nowhere").exists()  # 不会替 Codex 建文件
+
+
+def test_desktop_wake_queues_then_links_then_reminds(codex_room, codex_queue, toasts, monkeypatch):
+    import sqlite3
+
+    c, codex = codex_room
+    monkeypatch.setattr(codex, "hosted_by_desktop", lambda pid: True)
+    links: list[str] = []
+    monkeypatch.setattr(codex, "_open_link", links.append)
+    agent = {"kind": "codex", "pid": os.getpid(), "thread_id": "thread-1"}
+    assert codex.check(agent) is None and codex.hint(agent) is None  # 不用装 hook，闲着也叫得醒
+
+    _send(db.user_id(), "codex", "帮我 review")
+    [(call, err)] = service.run_once()
+    assert err is None and detector.states()[c]["note"].startswith("已叫醒")
+    [(_, thread, payload, _)] = _queue_rows(codex_queue)
+    assert thread == "thread-1" and "kopitiam：你有 1 条新消息" in payload
+    assert not signals_path("codex").exists()  # 没走 Stop hook 接力
+
+    pending = codex._pending_path(c)
+
+    def age(seconds):
+        obj = json.loads(pending.read_text(encoding="utf-8"))
+        obj["at"] = time.time() - seconds
+        pending.write_text(json.dumps(obj), encoding="utf-8")
+
+    codex.remind()
+    assert links == []  # 对话加载着的话桌面版几秒内自己就拿走了
+    codex._set_busy("thread-1", True)
+    age(codex.WAKE_LINK_AFTER + 1)
+    codex.remind()
+    assert links == []  # 正在一轮里：这一轮做完自己会拿
+    codex._set_busy("thread-1", False)
+    codex.remind()
+    codex.remind()
+    assert links == ["codex://threads/wake/thread-1"]  # 多半没加载：叫桌面版加载，只叫一次
+    assert toasts == []
+    age(codex.REMIND_QUEUED + 1)
+    codex.remind()
+    codex.remind()
+    assert len(toasts) == 1 and "已经排进它的队列" in toasts[0][1] and toasts[0][2] == "codex://threads/thread-1"
+
+    with closing(sqlite3.connect(codex_queue)) as q:  # Codex 拿走了
+        q.execute("DELETE FROM queued_items")
+        q.commit()
+    codex.remind()
+    assert not pending.exists() and toasts[-1] == ("removed", f"codex-{c}")
+
+
+def test_desktop_falls_back_to_handoff_when_queue_changed(codex_room, codex_queue, monkeypatch):
+    import sqlite3
+
+    c, codex = codex_room
+    monkeypatch.setattr(codex, "hosted_by_desktop", lambda pid: True)
+    with closing(sqlite3.connect(codex_queue)) as q:
+        q.execute("ALTER TABLE queued_items ADD COLUMN extra TEXT")
+        q.commit()
+    agent = {"kind": "codex", "pid": os.getpid(), "thread_id": "thread-1"}
+    assert "kopitiam setup codex" in codex.check(agent)  # 队列用不了，又没装 hook
+    assert "格式变了" in codex.hint(agent)
+    codex.hook_start()
+    assert codex.check(agent) is None
+    _send(db.user_id(), "codex")
+    service.run_once()
+    assert detector.states()[c]["note"].startswith(codex.HANDED_OFF)
+    assert "kopitiam：你有 1 条新消息" in signals_path("codex").read_text(encoding="utf-8")
+    assert _queue_rows(codex_queue) == []
+
+
 def signals_path(kind: str) -> Path:
     from kopitiam.wake import signals
 

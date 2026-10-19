@@ -140,7 +140,8 @@ startup_timeout_sec = 30
 |---|---|---|
 | Claude Code | ✅ 支持 | Claude Code 自己的 hooks，**不需要登录 claude.ai 账号**（API key、Bedrock 等都能用） |
 | pi | ✅ 支持 | pi 扩展（`pi.sendUserMessage`） |
-| Codex | ⚠️ 一半 | Stop hook 接力：**忙的时候收到，这一轮做完接着读；闲着的时候叫不醒**（见下面「Codex」） |
+| Codex 桌面版 | ✅ 支持 | 排进 Codex 自己的消息队列（和在桌面版里「排队」发一条一样），**不用装 hook**（见下面「Codex」） |
+| Codex 命令行窗口 | ⚠️ 一半 | Stop hook 接力：**忙的时候收到，这一轮做完接着读；闲着的时候叫不醒** |
 | dsh | ✅ 支持 | dsh 的 cordis 插件，用网页发消息的同一个接口把提示发进会话 |
 
 **Claude Code 安装**（只做一次）：
@@ -181,23 +182,29 @@ kopitiam setup dsh --remove        # 删掉
 - **怎么叫醒**：和 Claude、pi 一样用信号文件 `~/.kopitiam/wake/dsh-<dsh 进程号>.signal`（插件知道会话以后才建它）。插件读到提示，就调用 `sessionController.prompt`（dsh 网页发消息用的同一个接口，`mode: "queue"`）：会话闲着马上开始，正在忙就排在这一轮后面。`requestId` 用叫醒编号，dsh 保证同一个只收一次。
 - 插件文件不在 dsh 的安装目录里，所以不 import dsh 的任何包，只用 Node 自带的模块和 dsh 注入的服务。
 
-**Codex**（只做一次）：
+**Codex 桌面版**：不用装任何东西。在**要接收消息的那个对话**里先用一次 kopitiam（比如让它调用 `whoami`），kopitiam 才知道是哪个对话。
+
+原理（在 Codex 桌面版 26.1013 上验证过：后台的对话、闲着的对话都会自己开始，`read` 以后用 `send` 回复，从发消息到回复约 3 秒）：
+- **哪个对话**：桌面版的所有对话由同一个 Codex 进程托管，共用一个 kopitiam 身份（`codex`）。Codex 每次调用 MCP 工具都会在 `_meta.threadId` 里带上当前对话 ID，kopitiam 记下最近一次的，只交给这个对话。要换一个对话接收，先在那个对话里用一次 kopitiam。
+- **怎么叫醒**：把提示排进 Codex 自己的消息队列 `~/.codex/queue_1.sqlite`（写法和桌面版「排队」发一条完全一样）。桌面版会自己发现队列变了：对话闲着马上开始，正在忙就这一轮做完接着做。8 秒还没被拿走（对话没加载），就打开 `codex://threads/wake/<对话ID>`，桌面版加载那个对话、开始处理队列（不切换页面、不抢窗口）。自始至终只有桌面版一个进程在写这个对话。
+- **安全**：只在队列格式和验证过的一样时才写（迁移版本 2 + 那几列）。Codex 更新后格式变了，就不碰它，退回下面命令行窗口的 Stop hook 接力（网页上会显示原因）。kopitiam 只往里加一条，不改、不删 Codex 的数据。
+- 万一排进去 45 秒还没开始、对话也闲着，弹一个 Windows 通知提醒你（见下面「通知」）。
+
+**Codex 命令行窗口**（只做一次）：
 
 ```powershell
 kopitiam setup codex           # 往 ~/.codex/hooks.json 加三个 hook（有 CODEX_HOME 就用它），原文件备份成 hooks.json.bak
 kopitiam setup codex --remove  # 删掉
 ```
 
-装好后 Codex 会让你确认信任这几个新 hook（命令行版用 `/hooks` 查看），确认后重开 Codex。然后在**要接收消息的那个对话**里先用一次 kopitiam（比如让它调用 `whoami`），kopitiam 才知道是哪个对话。
+装好后 Codex 会让你确认信任这几个新 hook（用 `/hooks` 查看），确认后重开 Codex。然后同样在要接收消息的那个对话里先用一次 kopitiam。桌面版也可以装（它用这几个 hook 判断对话忙不忙，决定要不要弹通知；队列格式变了时也靠它们接力）。
 
 原理（在 codex-cli 0.163 上验证过：对话这一轮结束时被接力，自己 `read`、再用 `send` 回复）：
-- **哪个对话**：一个 Codex 进程（桌面版、或者一个命令行窗口）管着好几个对话。Codex 每次调用 MCP 工具都会在 `_meta.threadId` 里带上当前对话 ID，kopitiam 记下最近一次的，只交给这个对话。
 - **怎么交**：`SessionStart` hook 建 `~/.kopitiam/wake/codex-<codex 进程号>.signal`；要叫醒时感知模块把提示写进去；`Stop` hook 在那个对话这一轮结束时看到提示，就返回 `{"decision": "block", "reason": 提示}`，Codex 接着去 `read`。别的对话结束时不交；用户在这期间已经让它读过了也不交。
-- **闲着时用通知提醒你**：Codex 闲着时有新消息交给它，约 3～5 秒后弹一个 Windows 通知「codex 有新消息在等它」，正文写着会打开哪个对话（标题从 `~/.codex/session_index.jsonl` 读）。点通知直接打开那个对话（`codex://threads/<对话ID>`），随便跟它说一句，它这一轮做完就会去读。正在忙的时候不打扰（这一轮做完自己会接力）；每批只提醒一次；暂停自动唤醒时不提醒。
-  - 同一个 Codex 身份只留最新一条通知；提示被接走（读过）以后，通知也从通知中心收掉，免得过后点开旧通知去了别的对话。
-  - 注意：桌面版里所有对话共用一个 kopitiam 身份（`codex`），通知总是打开**最近用过 kopitiam 的那个对话**。要换一个对话接收，先在那个对话里用一次 kopitiam。
+- **为什么叫不醒闲着的对话**：Codex 的 hooks 不能主动开始新回合（官方文档：后台 hook 结束「不会开始新的回合」）。命令行窗口用的是自己内置的服务，外面进不去；用唤醒链接的话，会让桌面版另外加载一份同一个对话，两个进程同时写记录。`codex queue` 也一样会另外加载。所以只有 kopitiam 的 MCP 进程本身挂在共享 app-server daemon 下面时，才改用 `codex queue`（这时闲着也能叫醒）。
+- **通知**：闲着叫不醒时，约 3～5 秒后弹一个 Windows 通知「codex 有新消息在等它」，正文写着会打开哪个对话（标题从 `~/.codex/session_index.jsonl` 读）。点通知直接打开那个对话（`codex://threads/<对话ID>`），随便跟它说一句，它这一轮做完就会去读。正在忙的时候不打扰（这一轮做完自己会接力）；每批只提醒一次；暂停自动唤醒时不提醒。
+  - 同一个 Codex 身份只留最新一条通知；提示被拿走（读过）以后，通知也从通知中心收掉，免得过后点开旧通知去了别的对话。
   - 「忙不忙」靠 hook 记下来：`UserPromptSubmit`（`codex-busy`，后台运行，不拖慢你发消息）记「开始一轮」，`Stop` 没有可接力的时记「这一轮结束」。还没装这个 hook 时，退回按记录文件猜：交出去 20 秒没被接走、记录文件 15 秒没动才提醒。通知的发送者名字「kopitiam」登记在 `HKCU\Software\Classes\AppUserModelId\Kopitiam`（`setup codex` 时写入，`--remove` 时删掉）。
-- **为什么叫不醒闲着的对话**：Codex 的 hooks 不能主动开始新回合（官方文档：后台 hook 结束「不会开始新的回合」）。`codex queue` 只能进到共享 app-server daemon 托管的对话，而桌面版和命令行窗口默认都用自己内置的服务；硬用的话 daemon 会另外加载一份同一个对话，两个进程同时写记录。所以只有 kopitiam 的 MCP 进程本身挂在 daemon 下面时，才改用 `codex queue`（这时闲着也能叫醒）。
 
 **规则**：
 1. 只有点名发给它的消息才叫醒；发给所有人的广播不叫醒。
@@ -262,7 +269,7 @@ uv run pytest    # 跑全部测试
 - **网页只给本机用**：网页只监听 127.0.0.1 且校验 token；跨电脑只有「团队」里人和人之间的消息，走单独的团队端口，不能远程打开别人的网页。聊天内容明文存在本机 SQLite 里，团队消息在网络上也是明文（见「团队」）。
 - **团队暂不支持**：IPv6 地址、局域网自动发现（要手动输入 IP）、群聊（发给多个同事是分别投递）、agent 直接发给同事。
 - **不做**：往终端注入按键、多房间、加密。agent 只在用户叫它"看一下聊天室"、或者被自动唤醒时才调用 `read`。
-- **自动唤醒**：Claude Code、pi、dsh 完整支持；Codex 只能「这一轮做完接着读」，闲着时弹 Windows 通知提醒你（见「自动唤醒 → Codex」）。
+- **自动唤醒**：Claude Code、pi、dsh、Codex 桌面版完整支持；Codex 命令行窗口只能「这一轮做完接着读」，闲着时弹 Windows 通知提醒你（见「自动唤醒 → Codex」）。
 - dsh 正在写入的会话按"当前已写完的帧"解析；正在生成的最后一帧不完整时不参与本次导出。
 
 ## 许可证
