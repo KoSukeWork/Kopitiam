@@ -8,17 +8,21 @@ from typing import Callable
 
 from .. import db
 from ..config import WAKE_INTERVAL, WAKE_MAX_ROUNDS
-from . import claude, detector
+from . import claude, detector, pi, signals
 from .detector import WakeCall
 
-ADAPTERS = {"claude": claude}
+ADAPTERS = {"claude": claude, "pi": pi}
 HEARTBEAT = 10  # 每隔几秒在库里记一次「自动唤醒在运行」，网页据此提示有没有在跑
+CLEANUP = 600   # 每隔几秒清理一次关掉的 agent 留下的信号文件
+
+
+UNSUPPORTED = {"codex": "Codex 还不支持自动唤醒（桌面版的对话叫不醒，见 README）"}
 
 
 def check(agent: dict) -> str | None:
     mod = ADAPTERS.get(agent["kind"])
     if mod is None:
-        return f"{agent['kind']} 还不支持自动唤醒"
+        return UNSUPPORTED.get(agent["kind"], f"{agent['kind']} 还不支持自动唤醒")
     return mod.check(agent)
 
 
@@ -90,12 +94,15 @@ class WakeService:
         self._loop()
 
     def _loop(self) -> None:
-        beat = 0.0
+        beat = swept = 0.0
         while not self._stop.wait(self.interval):
             try:
                 if time.time() - beat >= HEARTBEAT:
                     db.set_meta("wake_alive", str(time.time()))
                     beat = time.time()
+                if time.time() - swept >= CLEANUP:
+                    signals.cleanup()
+                    swept = time.time()
                 for call, err in run_once():
                     if self.on_event:
                         self.on_event(call, err)

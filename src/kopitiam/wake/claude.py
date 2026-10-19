@@ -7,7 +7,7 @@
   Claude Code 收到后，会话空闲也会马上开始处理。
 
 CLAUDE_PID 是 Claude Code 给子进程设的环境变量，等于 MCP 进程认领身份时找到的 agent 进程（db.host_pid），
-所以「agent 的 pid」就能对上「哪个信号文件」。hook 进程里只用标准库 + psutil，启动要快。
+所以「agent 的 pid」就能对上「哪个信号文件」（见 signals.py）。hook 进程里只用标准库 + psutil，启动要快。
 """
 from __future__ import annotations
 
@@ -19,27 +19,23 @@ import time
 from pathlib import Path
 
 from ..config import norm, safe, wake_dir
-
-TAKEN_MAX_AGE = 24 * 3600  # 去重标记留一天
+from . import signals
 
 
 def signal_path(pid: int) -> Path:
-    return wake_dir() / f"claude-{pid}.signal"
+    return signals.path("claude", pid)
 
 
 # ---- 适配器（感知模块那边调用） ----
 
 def check(agent: dict) -> str | None:
-    if agent.get("pid") and signal_path(agent["pid"]).exists():
+    if signals.ready("claude", agent):
         return None
     return "Claude 没装唤醒 hook（运行 kopitiam setup claude，然后重开 Claude）"
 
 
 def wake(call) -> None:
-    p = signal_path(call.pid)
-    if not p.exists():
-        raise RuntimeError("信号文件不见了（Claude 可能已经关掉）")
-    p.write_text(json.dumps({"id": call.wake_id, "text": call.text}, ensure_ascii=False), encoding="utf-8")
+    signals.write("claude", call)
 
 
 # ---- hook（Claude Code 那边调用） ----
@@ -58,29 +54,13 @@ def _claude_pid(env) -> int | None:
     return None
 
 
-def _cleanup(d: Path) -> None:
-    """删掉已经关掉的 Claude 留下的信号文件、一天以前的去重标记。尽力而为。"""
-    try:
-        import psutil
-        for f in d.glob("claude-*.signal"):
-            pid = f.stem.removeprefix("claude-")
-            if pid.isdigit() and not psutil.pid_exists(int(pid)):
-                f.unlink(missing_ok=True)
-        for f in (d / "taken").glob("*"):
-            if time.time() - f.stat().st_mtime > TAKEN_MAX_AGE:
-                f.unlink(missing_ok=True)
-    except Exception:
-        pass
-
-
 def hook_start(env=os.environ) -> str:
     """SessionStart：返回给 Claude Code 的 JSON（stdout）。拿不到 pid 就什么都不做。"""
     pid = _claude_pid(env)
     if pid is None:
         return ""
-    d = wake_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    _cleanup(d)
+    wake_dir().mkdir(parents=True, exist_ok=True)
+    signals.cleanup()
     sig = signal_path(pid)
     if not sig.exists():
         sig.write_text("", encoding="utf-8")

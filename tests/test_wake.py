@@ -345,3 +345,51 @@ def test_service_heartbeat(home):
     finally:
         s.stop()
     assert not service.overview()["running"]
+
+
+# ---- pi 适配器 ----
+
+
+def test_pi_adapter_wakes_through_signal_file(home):
+    from kopitiam.wake import pi, signals
+
+    db.init_db()
+    p = db.claim("pi", cwd=str(home), name="P", pid=os.getpid())
+    _scan()
+    _send(db.user_id(), "P")
+    assert service.run_once() == []
+    assert "kopitiam setup pi" in _note(p)  # 扩展没装：没有信号文件
+
+    sig = signals.path("pi", os.getpid())
+    sig.parent.mkdir(parents=True, exist_ok=True)
+    sig.write_text("", encoding="utf-8")  # pi 扩展启动时会建这个文件
+    m = _send(db.user_id(), "P", "看一下")
+    assert [(c.name, err) for c, err in service.run_once()] == [("P", None)]
+    body = json.loads(sig.read_text(encoding="utf-8"))
+    assert body["id"] == f"{p}-{m}" and "kopitiam：你有 1 条新消息" in body["text"]
+
+
+def test_pi_install_and_remove(home):
+    from kopitiam.wake import pi
+
+    dest_dir = home / "pi-agent" / "extensions"
+    dest = pi.install(dest_dir)
+    assert dest == dest_dir / "kopitiam-wake.ts"
+    assert dest.read_text(encoding="utf-8") == pi.EXTENSION.read_text(encoding="utf-8")
+    assert "sendUserMessage" in dest.read_text(encoding="utf-8")
+    pi.install(dest_dir, remove=True)
+    assert not dest.exists()
+
+
+def test_signals_cleanup_handles_every_kind(home):
+    from kopitiam.wake import signals
+
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    wake_dir().mkdir(parents=True)
+    dead = [signals.path(k, proc.pid) for k in ("claude", "pi")]
+    alive = signals.path("pi", os.getpid())
+    for f in dead + [alive]:
+        f.write_text("", encoding="utf-8")
+    signals.cleanup()
+    assert not any(f.exists() for f in dead) and alive.exists()

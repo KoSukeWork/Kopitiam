@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("wake", help="单独运行自动唤醒（不开网页时用；开着 kopitiam web 就不需要）")
 
     ps = sub.add_parser("setup", help="给 agent 安装自动唤醒需要的配置")
-    ps.add_argument("agent", choices=["claude"])
+    ps.add_argument("agent", choices=["claude", "pi"])
     ps.add_argument("--print", dest="print_only", action="store_true", help="只打印要加的配置，不改文件")
     ps.add_argument("--remove", action="store_true", help="删掉 kopitiam 加的配置")
 
@@ -84,6 +84,9 @@ def _run_wake() -> int:
 
 
 def _run_setup(args) -> int:
+    if args.agent == "pi":
+        return _run_setup_pi(args)
+
     import json
 
     from .wake import claude
@@ -102,6 +105,24 @@ def _run_setup(args) -> int:
     print(f"{done}：{path}（原文件已备份成 {path.name}.bak）")
     if not args.remove:
         print("重开 Claude Code 后生效。")
+    return 0
+
+
+def _run_setup_pi(args) -> int:
+    from .wake import pi
+
+    dest = pi.extensions_dir() / pi.INSTALLED_NAME
+    if args.print_only:
+        print(f"会把 {pi.EXTENSION} 复制到 {dest}")
+        return 0
+    try:
+        pi.install(dest.parent, remove=args.remove)
+    except OSError as e:
+        print(f"错误：{e}", file=sys.stderr)
+        return 1
+    print(f"{'已删除' if args.remove else '已安装'}：{dest}")
+    if not args.remove:
+        print("重开 pi 后生效。")
     return 0
 
 

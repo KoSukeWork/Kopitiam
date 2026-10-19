@@ -31,7 +31,7 @@ uv tool install --editable <本项目目录>
 |---|---|
 | `kopitiam mcp --kind <claude\|codex\|pi\|dsh\|agent> [--name 名字]` | 启动 stdio MCP server（给 agent 用） |
 | `kopitiam web [--port 8765] [--no-open] [--share\|--no-share] [--peer-port 8766] [--peer-host 0.0.0.0] [--no-wake]` | 启动本地网页（只监听 127.0.0.1，带 token），同时运行自动唤醒；`--share` 等参数见下面的「团队」 |
-| `kopitiam setup claude [--print] [--remove]` | 给 Claude Code 装自动唤醒的 hook（见「自动唤醒」） |
+| `kopitiam setup <claude\|pi> [--print] [--remove]` | 给 Claude Code / pi 装自动唤醒的接收端（见「自动唤醒」） |
 | `kopitiam wake` | 不开网页时单独运行自动唤醒 |
 | `kopitiam export --agent <claude\|codex\|pi\|dsh> --cwd <项目目录> [--mode clean\|full] [--session-file P]` | 调试用：把某个 agent 的对话记录导出成 Markdown |
 
@@ -138,7 +138,9 @@ startup_timeout_sec = 30
 | agent | 状态 | 怎么叫醒 |
 |---|---|---|
 | Claude Code | ✅ 支持 | Claude Code 自己的 hooks，**不需要登录 claude.ai 账号**（API key、Bedrock 等都能用） |
-| Codex / pi / dsh | 适配中 | 网页上会显示「还不支持自动唤醒」 |
+| pi | ✅ 支持 | pi 扩展（`pi.sendUserMessage`） |
+| Codex | 适配中 | 见下面「Codex 为什么还不行」 |
+| dsh | 适配中 | 网页上会显示「还不支持自动唤醒」 |
 
 **Claude Code 安装**（只做一次）：
 
@@ -153,6 +155,21 @@ kopitiam setup claude --remove # 删掉
 - 要叫醒时，感知模块往信号文件里写这次的提示。
 - `FileChanged` hook（`asyncRewake: true`）把提示输出到 stderr，并以退出码 2 结束。Claude Code 收到后，**会话空闲也会马上开始处理**；会话正忙的话，等这一轮做完再处理。
 - 在 Claude Code 2.1.303 上验证过（空闲的会话连续被叫醒两次）。`asyncRewake` 是比较新的 hook 选项，太旧的 Claude Code 可能不支持。
+
+**pi 安装**（只做一次）：
+
+```powershell
+kopitiam setup pi           # 把扩展复制到 ~/.pi/agent/extensions/kopitiam-wake.ts（有 PI_CODING_AGENT_DIR 就用它）
+kopitiam setup pi --remove  # 删掉
+```
+
+装好后**重开 pi** 才生效。原理和 Claude 一样：扩展在 pi 启动时建 `~/.kopitiam/wake/pi-<进程号>.signal` 并监视它，读到新提示就用 `pi.sendUserMessage` 交给 pi（空闲时马上开始，正在忙就排在这一轮后面）。在 pi 1.3.0 上验证过：空闲的 pi 被叫醒后自己 `read`、再用 `send` 回复。
+
+**Codex 为什么还不行**（在 codex-cli 0.162 上试过）：
+- Codex 的 hooks 叫不醒空闲的对话（官方文档：后台 hook 结束「不会开始新的回合」）。
+- `codex queue --thread <ID> --message …` 能叫醒**命令行版**的空闲对话（命令行版的对话由共享的 app-server daemon 托管）。
+- 但 **ChatGPT 桌面版里的 Codex** 用的是桌面版自己私有的 app-server，`codex queue` 碰不到；硬用的话 daemon 会在后台再加载一份同一个对话，可能和桌面版同时写记录。
+- 另外 kopitiam 的 MCP 进程拿不到对话 ID，桌面版一个 codex 进程又管着所有对话，还要先解决「叫醒哪个对话」。
 
 **规则**：
 1. 只有点名发给它的消息才叫醒；发给所有人的广播不叫醒。
@@ -215,7 +232,7 @@ uv run pytest    # 跑全部测试
 - **网页只给本机用**：网页只监听 127.0.0.1 且校验 token；跨电脑只有「团队」里人和人之间的消息，走单独的团队端口，不能远程打开别人的网页。聊天内容明文存在本机 SQLite 里，团队消息在网络上也是明文（见「团队」）。
 - **团队暂不支持**：IPv6 地址、局域网自动发现（要手动输入 IP）、群聊（发给多个同事是分别投递）、agent 直接发给同事。
 - **不做**：往终端注入按键、多房间、加密。agent 只在用户叫它"看一下聊天室"、或者被自动唤醒时才调用 `read`。
-- **自动唤醒暂时只支持 Claude Code**；Codex、pi、dsh 在适配中。
+- **自动唤醒暂时只支持 Claude Code 和 pi**；Codex（见「Codex 为什么还不行」）、dsh 在适配中。
 - dsh 正在写入的会话按"当前已写完的帧"解析；正在生成的最后一帧不完整时不参与本次导出。
 
 ## 许可证

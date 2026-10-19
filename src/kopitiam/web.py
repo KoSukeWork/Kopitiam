@@ -1170,7 +1170,7 @@ function renderWake(body, w) {
 
   const s4 = el("div", "tsec");
   s4.append(el("div", "mnote",
-    "Claude Code：运行一次 kopitiam setup claude，然后重开 Claude（不需要登录 claude.ai 账号）。Codex、pi、dsh 还在适配中。" +
+    "Claude Code、pi：各运行一次 kopitiam setup claude / kopitiam setup pi，然后重开它们（Claude 不需要登录 claude.ai 账号）。Codex、dsh 还在适配中。" +
     "被叫醒的 agent 用的是它当前会话的权限：开了跳过权限的会话，别的 agent 也能让它执行命令。"));
   body.append(s1, s2, s3, s4);
 }
