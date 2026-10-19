@@ -8,12 +8,12 @@ from typing import Callable
 
 from .. import db
 from ..config import WAKE_INTERVAL, WAKE_MAX_ROUNDS
-from . import claude, codex, detector, pi, signals
+from . import claude, codex, detector, dsh, pi, signals
 from .detector import WakeCall
 
 # 每个适配器：check(agent) -> 叫不醒的原因或 None；wake(call) -> 结果说明或 None（= 已叫醒），失败抛异常；
 # 可选 hint(agent) -> 能叫醒但有限制时的说明（给网页显示）；可选 remind() -> 定时调用（Codex 用来弹通知）
-ADAPTERS = {"claude": claude, "codex": codex, "pi": pi}
+ADAPTERS = {"claude": claude, "codex": codex, "dsh": dsh, "pi": pi}
 HEARTBEAT = 10  # 每隔几秒在库里记一次「自动唤醒在运行」，网页据此提示有没有在跑
 CLEANUP = 600   # 每隔几秒清理一次关掉的 agent 留下的信号文件
 REMIND = 2      # 每隔几秒调一次适配器的 remind()（只看几个小文件，很便宜）

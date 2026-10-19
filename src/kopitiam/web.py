@@ -1170,8 +1170,8 @@ function renderWake(body, w) {
 
   const s4 = el("div", "tsec");
   s4.append(el("div", "mnote",
-    "Claude Code、Codex、pi：各运行一次 kopitiam setup claude / codex / pi，然后重开它们（Claude 不需要登录 claude.ai 账号）。" +
-    "Codex 闲着的时候叫不醒，只能在它这一轮做完时接着读。dsh 还在适配中。" +
+    "Claude Code、Codex、pi、dsh：各运行一次 kopitiam setup claude / codex / pi / dsh，然后重开它们（Claude 不需要登录 claude.ai 账号）。" +
+    "Codex 闲着的时候叫不醒：这一轮做完会接着读，闲着时弹 Windows 通知提醒你。" +
     "被叫醒的 agent 用的是它当前会话的权限：开了跳过权限的会话，别的 agent 也能让它执行命令。"));
   body.append(s1, s2, s3, s4);
 }

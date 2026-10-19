@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -635,3 +636,96 @@ def signals_path(kind: str) -> Path:
     from kopitiam.wake import signals
 
     return signals.path(kind, os.getpid())
+
+
+# ---- dsh：cordis 插件 + cordis.patch.yml ----
+
+
+def test_dsh_install_appends_marked_block_and_removes_it(home):
+    from kopitiam.wake import dsh
+
+    profile = home / "profiles" / "web"
+    profile.mkdir(parents=True)
+    original = "# 我的 patch\n- id: llm\n  name: x\n- insert:\n    - id: kopitiam\n      config:\n        serverName: kopitiam\n"
+    (profile / "cordis.patch.yml").write_text(original, encoding="utf-8")
+    (home / "profiles" / "desktop").mkdir()
+    (home / "profiles" / "desktop" / "cordis.patch.yml").write_text("- id: other\n", encoding="utf-8")
+    assert dsh.target_profiles(home / "profiles") == [profile]  # 只装进配了 kopitiam MCP 的
+
+    plugin = dsh.install(profile)
+    dsh.install(profile)  # 再装一次不会重复
+    text = (profile / "cordis.patch.yml").read_text(encoding="utf-8")
+    assert text.startswith(original) and text.count(dsh.BEGIN) == 1 and text.count("id: kopitiam-wake") == 1
+    assert f"name: '{plugin}'" in text
+    assert plugin.read_text(encoding="utf-8") == dsh.PLUGIN.read_text(encoding="utf-8")
+    assert (profile / "cordis.patch.yml.bak-kopitiam").exists()
+
+    dsh.install(profile, remove=True)
+    assert (profile / "cordis.patch.yml").read_text(encoding="utf-8").rstrip("\n") == original.rstrip("\n")
+    assert not plugin.exists()
+    assert "''" in dsh.patch_block(Path("C:/it's/kopitiam-wake.mjs"))  # YAML 单引号要写两遍
+
+
+def test_dsh_adapter_uses_signal_file(home):
+    db.init_db()
+    d = db.claim("dsh", cwd=str(home), name="dsh", pid=os.getpid())
+    _scan()
+    _send(db.user_id(), "dsh")
+    assert service.run_once() == []
+    assert "kopitiam setup dsh" in _note(d)
+    sig = signals_path("dsh")
+    sig.parent.mkdir(parents=True, exist_ok=True)
+    sig.write_text("", encoding="utf-8")  # 插件知道会话以后会建这个文件
+    m = _send(db.user_id(), "dsh", "看一下")
+    assert [(x.name, err) for x, err in service.run_once()] == [("dsh", None)]
+    assert json.loads(sig.read_text(encoding="utf-8"))["id"] == f"{d}-{m}"
+
+
+NODE_DRIVER = r"""
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+const { apply, inject, name } = await import(pathToFileURL(process.argv[2]).href);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const handlers = {}, disposers = [], prompts = [], warns = [];
+const ctx = {
+  on: (event, fn) => { handlers[event] = fn; },
+  effect: (fn) => { disposers.push(fn()); },
+  logger: { warn: (m) => warns.push(m) },
+  sessionController: { prompt: async (req) => { prompts.push(req); return { accepted: true }; } },
+};
+apply(ctx);
+const dir = join(process.env.KOPITIAM_HOME, "wake");
+const signal = join(dir, `dsh-${process.pid}.signal`);
+const before = existsSync(signal);
+const passed = await handlers["tools/post-execute"](
+  { name: "mcp__kopitiam__whoami", agent: { session: { header: { id: "s-1" } } } }, {}, async () => "next");
+await handlers["tools/post-execute"]({ name: "read_file", agent: { session: { header: { id: "s-2" } } } }, {}, async () => "next");
+const after = existsSync(signal);
+writeFileSync(signal, JSON.stringify({ id: "5-9", text: "kopitiam：你有 1 条新消息" }));
+await sleep(500);
+writeFileSync(signal, JSON.stringify({ id: "5-9", text: "kopitiam：你有 1 条新消息" }));  // 同一次再触发
+await sleep(500);
+disposers.forEach((d) => d());
+console.log(JSON.stringify({ name, inject, before, after, passed, prompts, warns,
+  remembered: readFileSync(join(dir, "dsh-session.txt"), "utf8"), removed: !existsSync(signal) }));
+"""
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="需要 Node.js")
+def test_dsh_plugin_prompts_the_kopitiam_session(home):
+    from kopitiam.wake import dsh
+
+    driver = home / "driver.mjs"
+    driver.write_text(NODE_DRIVER, encoding="utf-8")
+    r = subprocess.run(["node", str(driver), str(dsh.PLUGIN)], capture_output=True, text=True,
+                       encoding="utf-8", timeout=60, env=os.environ | {"KOPITIAM_HOME": str(home)})
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout.strip().splitlines()[-1])
+    assert out["name"] == "kopitiam-wake" and out["inject"] == ["sessionController"]
+    assert out["before"] is False and out["after"] is True  # 知道会话以后才算能叫醒
+    assert out["passed"] == "next"  # 不挡别的插件
+    assert out["remembered"] == "s-1"  # 只记调用 kopitiam 工具的会话
+    assert out["prompts"] == [{"requestId": "kopitiam-5-9", "sessionId": "s-1", "mode": "queue",
+                               "content": [{"type": "text", "text": "kopitiam：你有 1 条新消息"}]}]
+    assert out["warns"] == [] and out["removed"] is True

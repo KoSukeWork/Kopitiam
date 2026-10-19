@@ -31,7 +31,7 @@ uv tool install --editable <本项目目录>
 |---|---|
 | `kopitiam mcp --kind <claude\|codex\|pi\|dsh\|agent> [--name 名字]` | 启动 stdio MCP server（给 agent 用） |
 | `kopitiam web [--port 8765] [--no-open] [--share\|--no-share] [--peer-port 8766] [--peer-host 0.0.0.0] [--no-wake]` | 启动本地网页（只监听 127.0.0.1，带 token），同时运行自动唤醒；`--share` 等参数见下面的「团队」 |
-| `kopitiam setup <claude\|codex\|pi> [--print] [--remove]` | 给 Claude Code / Codex / pi 装自动唤醒的接收端（见「自动唤醒」） |
+| `kopitiam setup <claude\|codex\|pi\|dsh> [--print] [--remove]` | 给 Claude Code / Codex / pi / dsh 装自动唤醒的接收端（见「自动唤醒」） |
 | `kopitiam wake` | 不开网页时单独运行自动唤醒 |
 | `kopitiam export --agent <claude\|codex\|pi\|dsh> --cwd <项目目录> [--mode clean\|full] [--session-file P]` | 调试用：把某个 agent 的对话记录导出成 Markdown |
 
@@ -141,7 +141,7 @@ startup_timeout_sec = 30
 | Claude Code | ✅ 支持 | Claude Code 自己的 hooks，**不需要登录 claude.ai 账号**（API key、Bedrock 等都能用） |
 | pi | ✅ 支持 | pi 扩展（`pi.sendUserMessage`） |
 | Codex | ⚠️ 一半 | Stop hook 接力：**忙的时候收到，这一轮做完接着读；闲着的时候叫不醒**（见下面「Codex」） |
-| dsh | 适配中 | 网页上会显示「还不支持自动唤醒」 |
+| dsh | ✅ 支持 | dsh 的 cordis 插件，用网页发消息的同一个接口把提示发进会话 |
 
 **Claude Code 安装**（只做一次）：
 
@@ -165,6 +165,21 @@ kopitiam setup pi --remove  # 删掉
 ```
 
 装好后**重开 pi** 才生效。原理和 Claude 一样：扩展在 pi 启动时建 `~/.kopitiam/wake/pi-<进程号>.signal` 并监视它，读到新提示就用 `pi.sendUserMessage` 交给 pi（空闲时马上开始，正在忙就排在这一轮后面）。在 pi 1.3.0 上验证过：空闲的 pi 被叫醒后自己 `read`、再用 `send` 回复。
+
+**dsh 安装**（只做一次）：
+
+```powershell
+kopitiam setup dsh                 # 装进已经配了 kopitiam MCP 的 profile；原文件备份成 cordis.patch.yml.bak-kopitiam
+kopitiam setup dsh --profile web   # 指定 profile（可以写多次）
+kopitiam setup dsh --remove        # 删掉
+```
+
+它把插件复制到 `~/.dsh/profiles/<profile>/kopitiam-wake.mjs`，并在那个 profile 的 `cordis.patch.yml` 末尾加一段 `- insert:`（前后有 `# >>> kopitiam 自动唤醒` / `# <<< kopitiam 自动唤醒` 标记行，`--remove` 整段删掉，别的内容不动）。web profile 默认 `patchReload: live`，改完自动重新加载；别的 profile 要重开 dsh。然后在**要接收消息的那个会话**里先用一次 kopitiam（比如让它调用 `whoami`）。
+
+原理：
+- **哪个会话**：一个 dsh 进程管着好几个会话，插件在 `tools/post-execute` 事件里看到哪个会话调用了 `mcp__kopitiam__*` 工具，就记下它（也存进 `~/.kopitiam/wake/dsh-session.txt`，dsh 重开以后还能用）。
+- **怎么叫醒**：和 Claude、pi 一样用信号文件 `~/.kopitiam/wake/dsh-<dsh 进程号>.signal`（插件知道会话以后才建它）。插件读到提示，就调用 `sessionController.prompt`（dsh 网页发消息用的同一个接口，`mode: "queue"`）：会话闲着马上开始，正在忙就排在这一轮后面。`requestId` 用叫醒编号，dsh 保证同一个只收一次。
+- 插件文件不在 dsh 的安装目录里，所以不 import dsh 的任何包，只用 Node 自带的模块和 dsh 注入的服务。
 
 **Codex**（只做一次）：
 
@@ -245,7 +260,7 @@ uv run pytest    # 跑全部测试
 - **网页只给本机用**：网页只监听 127.0.0.1 且校验 token；跨电脑只有「团队」里人和人之间的消息，走单独的团队端口，不能远程打开别人的网页。聊天内容明文存在本机 SQLite 里，团队消息在网络上也是明文（见「团队」）。
 - **团队暂不支持**：IPv6 地址、局域网自动发现（要手动输入 IP）、群聊（发给多个同事是分别投递）、agent 直接发给同事。
 - **不做**：往终端注入按键、多房间、加密。agent 只在用户叫它"看一下聊天室"、或者被自动唤醒时才调用 `read`。
-- **自动唤醒**：Claude Code、pi 完整支持；Codex 只能「这一轮做完接着读」，闲着叫不醒（见「自动唤醒 → Codex」）；dsh 在适配中。
+- **自动唤醒**：Claude Code、pi、dsh 完整支持；Codex 只能「这一轮做完接着读」，闲着时弹 Windows 通知提醒你（见「自动唤醒 → Codex」）。
 - dsh 正在写入的会话按"当前已写完的帧"解析；正在生成的最后一帧不完整时不参与本次导出。
 
 ## 许可证

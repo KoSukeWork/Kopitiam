@@ -33,9 +33,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("wake", help="单独运行自动唤醒（不开网页时用；开着 kopitiam web 就不需要）")
 
     ps = sub.add_parser("setup", help="给 agent 安装自动唤醒需要的配置")
-    ps.add_argument("agent", choices=["claude", "codex", "pi"])
+    ps.add_argument("agent", choices=["claude", "codex", "dsh", "pi"])
     ps.add_argument("--print", dest="print_only", action="store_true", help="只打印要加的配置，不改文件")
     ps.add_argument("--remove", action="store_true", help="删掉 kopitiam 加的配置")
+    ps.add_argument("--profile", action="append", default=None,
+                    help="dsh：装进哪个 profile（可以写多次；默认是已经配了 kopitiam MCP 的那些）")
 
     ph = sub.add_parser("hook", help="给 agent 的 hook 调用（不用手动运行）")
     ph.add_argument("event", choices=["claude-start", "claude-wake", "codex-start", "codex-busy", "codex-stop"])
@@ -93,6 +95,8 @@ SETUP_DONE = {
 def _run_setup(args) -> int:
     if args.agent == "pi":
         return _run_setup_pi(args)
+    if args.agent == "dsh":
+        return _run_setup_dsh(args)
 
     import json
 
@@ -130,6 +134,33 @@ def _run_setup_pi(args) -> int:
     print(f"{'已删除' if args.remove else '已安装'}：{dest}")
     if not args.remove:
         print("重开 pi 后生效。")
+    return 0
+
+
+def _run_setup_dsh(args) -> int:
+    from .wake import dsh
+
+    base = dsh.profiles_dir()
+    profiles = [base / name for name in args.profile] if args.profile else dsh.target_profiles(base)
+    if not profiles:
+        print(f"错误：{base} 下没有配了 kopitiam MCP 的 dsh profile。先按 README 把 kopitiam 接进 dsh，"
+              "或者用 --profile 指定。", file=sys.stderr)
+        return 1
+    for profile in profiles:
+        if args.print_only:
+            print(f"会把插件复制到 {profile / dsh.INSTALLED_NAME}，并在 {profile / 'cordis.patch.yml'} 末尾加：\n"
+                  + dsh.patch_block(profile / dsh.INSTALLED_NAME))
+            continue
+        try:
+            dsh.install(profile, remove=args.remove)
+        except OSError as e:
+            print(f"错误：{profile.name}：{e}", file=sys.stderr)
+            return 1
+        print(f"{'已删除' if args.remove else '已安装'}：{profile.name} profile"
+              f"（{profile / 'cordis.patch.yml'}，原文件备份成 cordis.patch.yml.bak-kopitiam）")
+    if not args.remove and not args.print_only:
+        print("web profile 会自动重新加载；别的 profile 要重开 dsh。\n"
+              "然后在要接收消息的那个会话里先用一次 kopitiam（比如让它调用 whoami），kopitiam 才知道是哪个会话。")
     return 0
 
 
