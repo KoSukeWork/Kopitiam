@@ -427,8 +427,10 @@ def _thread(agent_id: int):
 
 @pytest.fixture
 def codex_room(home, monkeypatch):
+    from kopitiam.export import codex as codex_export
     from kopitiam.wake import codex
 
+    monkeypatch.setattr(codex_export, "ROOT", home / "fake-codex" / "sessions")  # 不读真的 ~/.codex
     db.init_db()
     c = db.claim("codex", cwd=str(home), name="codex", pid=os.getpid())
     db.set_thread(c, "thread-1")
@@ -585,7 +587,29 @@ def test_codex_remind_fast_when_hooks_say_idle(codex_room, toasts):
     assert len(toasts) == 1  # 同一批只提醒一次
     title, body, link = toasts[0]
     assert "codex 有新消息在等它" in title and "user 发来 1 条" in body
+    assert "最近用过 kopitiam 的那个对话" in body  # 不知道标题
     assert link == "codex://threads/thread-1"
+
+
+def test_codex_remind_names_thread_and_clears_when_taken(codex_room, toasts, home):
+    c, codex = codex_room
+    index = home / "fake-codex" / "session_index.jsonl"
+    index.parent.mkdir(parents=True, exist_ok=True)
+    index.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in [
+        {"id": "thread-1", "thread_name": "旧名字"},
+        {"id": "thread-2", "thread_name": "别的对话"},
+        {"id": "thread-1", "thread_name": "查找脚步特效"},  # 改过名：取最后一条
+    ]) + "\n", encoding="utf-8")
+    codex._set_busy("thread-1", False)
+    sig = _hand_off(codex)
+    _old(sig, codex.REMIND_IDLE + 1)
+    codex.remind()
+    assert len(toasts) == 1 and "点这里打开「查找脚步特效」" in toasts[0][1]
+
+    codex.hook_stop(json.dumps({"session_id": "thread-1"}))  # 用户说了一句，这一轮结束时接走了
+    codex.remind()
+    codex.remind()
+    assert toasts[1:] == [("removed", f"codex-{c}")]  # 通知收掉，只收一次
 
 
 def test_codex_stop_records_idle_and_busy(codex_room):

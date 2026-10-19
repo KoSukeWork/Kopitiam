@@ -30,6 +30,26 @@ def find_by_thread(thread_id: str, home: Path | None = None) -> Path | None:
     return None
 
 
+def thread_title(thread_id: str, home: Path | None = None) -> str | None:
+    """对话标题：~/.codex/session_index.jsonl 里这个对话的 thread_name（改过名会追加一行，取最后一条）。"""
+    base = (home / ".codex") if home else ROOT.parent
+    title = None
+    try:
+        with (base / "session_index.jsonl").open(encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if thread_id not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict) and obj.get("id") == thread_id and obj.get("thread_name"):
+                    title = str(obj["thread_name"])
+    except OSError:
+        return None
+    return title
+
+
 def header_cwd(path: Path) -> str | None:
     with path.open(encoding="utf-8", errors="replace") as f:
         first = f.readline()

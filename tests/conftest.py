@@ -21,7 +21,8 @@ def toasts(monkeypatch):
     from kopitiam.wake import notify
 
     shown: list[tuple] = []
-    monkeypatch.setattr(notify, "toast", lambda *a: shown.append(a))
+    monkeypatch.setattr(notify, "toast", lambda *a, **k: shown.append(a))
+    monkeypatch.setattr(notify, "remove", lambda tag: shown.append(("removed", tag)))
     monkeypatch.setattr(notify, "register", lambda: None)
     monkeypatch.setattr(notify, "unregister", lambda: None)
     return shown

@@ -76,17 +76,25 @@ def wake(call) -> str | None:
 def remind() -> None:
     """Codex 闲着时叫不醒：交出去的提示一直没被接走、那个对话也没在动，就弹 Windows 通知提醒用户。
 
-    点通知打开那个对话（codex://threads/<对话ID>）；用户随便跟它说一句，这一轮结束时 Stop hook 就会接力。
-    每一批只提醒一次。感知模块的后台线程定时调用。
+    点通知打开那个对话（codex://threads/<对话ID>，通知里写上对话标题）；用户随便跟它说一句，
+    这一轮结束时 Stop hook 就会接力。每一批只提醒一次；同一个 agent 只留最新一条通知，
+    提示被接走以后把通知收掉，免得以后点开旧通知去了不相干的对话。感知模块的后台线程定时调用。
     """
     import psutil
 
-    from ..export.codex import find_by_thread
+    from ..export.codex import find_by_thread, thread_title
 
     now = time.time()
     for f in wake_dir().glob("codex-*.signal"):
         obj = signals.read(f)
-        if not obj or signals.taken(obj["id"]):
+        if not obj:
+            continue
+        tag = f"codex-{str(obj['id']).partition('-')[0]}"  # 叫醒编号开头是 agent 的 id
+        shown = wake_dir() / "taken" / f"toast-{tag}"
+        if signals.taken(obj["id"]):
+            if shown.exists():
+                shown.unlink(missing_ok=True)
+                notify.remove(tag)
             continue
         age = now - f.stat().st_mtime
         pid = f.stem.rpartition("-")[2]
@@ -105,10 +113,14 @@ def remind() -> None:
         if not signals.take(f"remind-{obj['id']}"):
             continue  # 这一批已经提醒过
         who = "、".join(obj.get("senders") or []) or "有人"
+        title = thread_title(thread) if thread else None
+        where = f"「{title}」" if title else "最近用过 kopitiam 的那个对话"
         notify.toast(f"{obj.get('name') or 'codex'} 有新消息在等它",
                      f"{who} 发来 {obj.get('count') or 1} 条。Codex 闲着时叫不醒："
-                     "点这里打开那个对话，随便跟它说一句，它这一轮做完就会去读。",
-                     f"codex://threads/{thread}" if thread else "codex://")
+                     f"点这里打开{where}，随便跟它说一句，它这一轮做完就会去读。",
+                     f"codex://threads/{thread}" if thread else "codex://", tag=tag)
+        shown.parent.mkdir(parents=True, exist_ok=True)
+        shown.touch()
 
 
 # ---- 每个对话忙不忙：UserPromptSubmit = 开始一轮，Stop 不接力 = 这一轮结束 ----

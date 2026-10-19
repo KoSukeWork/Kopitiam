@@ -3,6 +3,7 @@
 通知的发送者显示为「kopitiam」：在 HKCU\\Software\\Classes\\AppUserModelId\\Kopitiam 登记一个名字
 （Windows 给没有安装包的程序用的标准做法，不需要管理员权限）。没登记时退回用 PowerShell 的身份。
 点通知打开 launch 链接（比如 codex://threads/<对话ID> 直接打开那个 Codex 对话）。
+带 tag 的通知同一个 tag 只留最新一条，提醒的事办完了用 remove 收掉，免得以后点开旧通知走错地方。
 """
 from __future__ import annotations
 
@@ -22,8 +23,15 @@ _SCRIPT = r"""
 $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
 $xml.LoadXml($env:KOPITIAM_TOAST_XML)
 $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+if ($env:KOPITIAM_TOAST_TAG) { $toast.Tag = $env:KOPITIAM_TOAST_TAG; $toast.Group = $env:KOPITIAM_TOAST_GROUP }
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($env:KOPITIAM_TOAST_APP).Show($toast)
 """
+
+_REMOVE = r"""
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.UI.Notifications.ToastNotificationManager]::History.Remove($env:KOPITIAM_TOAST_TAG, $env:KOPITIAM_TOAST_GROUP, $env:KOPITIAM_TOAST_APP)
+"""
+GROUP = "kopitiam"
 
 
 def register() -> None:
@@ -60,14 +68,23 @@ def toast_xml(title: str, body: str, launch: str | None = None) -> str:
             f"<text>{escape(title)}</text><text>{escape(body)}</text></binding></visual></toast>")
 
 
-def toast(title: str, body: str, launch: str | None = None) -> None:
-    """弹一个通知；不等它弹完。不是 Windows 就什么都不做。"""
+def toast(title: str, body: str, launch: str | None = None, tag: str | None = None) -> None:
+    """弹一个通知；不等它弹完。不是 Windows 就什么都不做。tag 相同的新通知替换旧的。"""
+    _run(_SCRIPT, {"KOPITIAM_TOAST_XML": toast_xml(title, body, launch), "KOPITIAM_TOAST_TAG": tag or ""})
+
+
+def remove(tag: str) -> None:
+    """收掉 tag 对应的通知（通知中心里的也收掉）；没有就什么都不做。"""
+    _run(_REMOVE, {"KOPITIAM_TOAST_TAG": tag})
+
+
+def _run(script: str, extra: dict[str, str]) -> None:
     if os.name != "nt":
         return
-    env = os.environ | {"KOPITIAM_TOAST_XML": toast_xml(title, body, launch), "KOPITIAM_TOAST_APP": _app_id()}
+    env = os.environ | {"KOPITIAM_TOAST_APP": _app_id(), "KOPITIAM_TOAST_GROUP": GROUP} | extra
     subprocess.Popen(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand",
-         base64.b64encode(_SCRIPT.encode("utf-16-le")).decode("ascii")],
+         base64.b64encode(script.encode("utf-16-le")).decode("ascii")],
         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
