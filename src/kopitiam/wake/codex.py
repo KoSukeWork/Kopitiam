@@ -8,7 +8,8 @@ Codex 每次调用 kopitiam 的工具，都在 _meta.threadId 里带上当前对
   正在忙就这一轮做完接着做。过一会儿还没被拿走（对话没加载），就打开 codex://threads/wake/<对话ID>，
   桌面版会加载那个对话、开始处理队列。自始至终只有桌面版一个进程在写这个对话。
   队列格式和验证过的不一样（Codex 更新过）就不碰它，退回下面的 Stop hook 接力。
-- 共享的 app-server daemon（MCP 进程挂在 daemon 下面）：用 codex queue --thread 排一条消息，对话空闲也会马上开始。
+- 共享的 app-server daemon（MCP 进程挂在 daemon 下面，codex-cli 0.163 的命令行窗口默认如此）：
+  用 codex queue --thread 排一条消息，对话空闲也会马上开始。
 - 命令行窗口自己内置的服务：外面进不去（打开唤醒链接会让桌面版另外加载同一个对话，两个进程同时写记录）。
   改成 Stop hook 接力：提示写进信号文件，那个对话这一轮结束时（kopitiam hook codex-stop）让它接着去 read。
   闲着的对话要等它下一轮做完。
@@ -164,7 +165,7 @@ def hint(agent: dict) -> str | None:
         if problem is None:
             return None
         return f"{problem}，退回接力：忙的时候收到这一轮做完接着读，闲着的时候叫不醒"
-    return "命令行窗口：忙的时候收到，这一轮做完接着读；闲着的时候叫不醒（Codex 的限制）"
+    return "对话在命令行窗口自己里面：忙的时候收到，这一轮做完接着读；闲着的时候叫不醒（Codex 的限制）"
 
 
 def wake(call) -> str | None:
