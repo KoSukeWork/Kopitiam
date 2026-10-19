@@ -24,6 +24,7 @@ INSTRUCTIONS = """本地聊天室，用于和其他 coding agent 及用户沟通
 mcp = FastMCP("kopitiam", instructions=INSTRUCTIONS)
 
 _ME: int | None = None
+_THREAD: str | None = None  # 最近一次记下的对话 ID，没变就不重复写库
 
 
 def _me() -> int:
@@ -32,9 +33,23 @@ def _me() -> int:
     return _ME
 
 
+def _note_thread() -> None:
+    """Codex 每次调用工具都在 _meta.threadId 里带上当前对话 ID：记下来，自动唤醒和导出记录时用。"""
+    global _THREAD
+    try:
+        meta = mcp.get_context().request_context.meta
+        tid = (meta.model_extra or {}).get("threadId") if meta is not None else None
+    except Exception:
+        return  # 不在请求里（测试直接调用）或者客户端没带
+    if tid and str(tid) != _THREAD:
+        db.set_thread(_me(), str(tid))
+        _THREAD = str(tid)
+
+
 def _call(fn, *args, **kwargs) -> str:
     """工具入口统一兜底：任何意外都变成「错误：」文本，不向客户端抛异常。"""
     try:
+        _note_thread()
         return fn(*args, **kwargs)
     except Exception as e:
         return f"错误：{e}"

@@ -33,12 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("wake", help="单独运行自动唤醒（不开网页时用；开着 kopitiam web 就不需要）")
 
     ps = sub.add_parser("setup", help="给 agent 安装自动唤醒需要的配置")
-    ps.add_argument("agent", choices=["claude", "pi"])
+    ps.add_argument("agent", choices=["claude", "codex", "pi"])
     ps.add_argument("--print", dest="print_only", action="store_true", help="只打印要加的配置，不改文件")
     ps.add_argument("--remove", action="store_true", help="删掉 kopitiam 加的配置")
 
     ph = sub.add_parser("hook", help="给 agent 的 hook 调用（不用手动运行）")
-    ph.add_argument("event", choices=["claude-start", "claude-wake"])
+    ph.add_argument("event", choices=["claude-start", "claude-wake", "codex-start", "codex-stop"])
 
     pe = sub.add_parser("export", help="调试用：导出某个 agent 的对话记录")
     pe.add_argument("--agent", required=True, choices=["claude", "codex", "pi", "dsh"])
@@ -83,28 +83,35 @@ def _run_wake() -> int:
     return 0
 
 
+SETUP_DONE = {
+    "claude": "重开 Claude Code 后生效。",
+    "codex": "Codex 会让你确认信任这两个新 hook（命令行版用 /hooks 查看），确认后重开 Codex。\n"
+             "另外，要在接收消息的那个对话里先用一次 kopitiam（比如让它调用 whoami），kopitiam 才知道是哪个对话。",
+}
+
+
 def _run_setup(args) -> int:
     if args.agent == "pi":
         return _run_setup_pi(args)
 
     import json
 
-    from .wake import claude
+    from .wake import claude, codex, hookfile
 
+    mod, path = (claude, claude.settings_path()) if args.agent == "claude" else (codex, codex.hooks_path())
     try:
-        exe = claude.exe_path()
+        exe = hookfile.exe_path()
         if args.print_only:
-            print(json.dumps({"hooks": {k: [v] for k, v in claude.hook_entries(exe).items()}},
+            print(json.dumps({"hooks": {k: [v] for k, v in mod.hook_entries(exe).items()}},
                              ensure_ascii=False, indent=2))
             return 0
-        path = claude.settings_path()
-        done = claude.install(path, exe, remove=args.remove)
+        done = mod.install(path, exe, remove=args.remove)
     except (RuntimeError, OSError, ValueError) as e:
         print(f"错误：{e}", file=sys.stderr)
         return 1
     print(f"{done}：{path}（原文件已备份成 {path.name}.bak）")
     if not args.remove:
-        print("重开 Claude Code 后生效。")
+        print(SETUP_DONE[args.agent])
     return 0
 
 
@@ -127,11 +134,20 @@ def _run_setup_pi(args) -> int:
 
 
 def _run_hook(event: str) -> int:
-    """hook 入口：stdin 是 Claude Code 给的 JSON。任何意外都静默退出 0，不能打扰 Claude。"""
-    from .wake import claude
-
+    """hook 入口：stdin 是 agent 给的 JSON。任何意外都静默退出 0，不能打扰 agent。"""
     try:
         stdin = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+        if event.startswith("codex-"):
+            from .wake import codex
+            if event == "codex-start":
+                codex.hook_start()
+            else:
+                out = codex.hook_stop(stdin)
+                if out:
+                    sys.stdout.write(out + "\n")
+            return 0
+
+        from .wake import claude
         if event == "claude-start":
             out = claude.hook_start()
             if out:

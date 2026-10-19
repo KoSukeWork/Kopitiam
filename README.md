@@ -31,7 +31,7 @@ uv tool install --editable <本项目目录>
 |---|---|
 | `kopitiam mcp --kind <claude\|codex\|pi\|dsh\|agent> [--name 名字]` | 启动 stdio MCP server（给 agent 用） |
 | `kopitiam web [--port 8765] [--no-open] [--share\|--no-share] [--peer-port 8766] [--peer-host 0.0.0.0] [--no-wake]` | 启动本地网页（只监听 127.0.0.1，带 token），同时运行自动唤醒；`--share` 等参数见下面的「团队」 |
-| `kopitiam setup <claude\|pi> [--print] [--remove]` | 给 Claude Code / pi 装自动唤醒的接收端（见「自动唤醒」） |
+| `kopitiam setup <claude\|codex\|pi> [--print] [--remove]` | 给 Claude Code / Codex / pi 装自动唤醒的接收端（见「自动唤醒」） |
 | `kopitiam wake` | 不开网页时单独运行自动唤醒 |
 | `kopitiam export --agent <claude\|codex\|pi\|dsh> --cwd <项目目录> [--mode clean\|full] [--session-file P]` | 调试用：把某个 agent 的对话记录导出成 Markdown |
 
@@ -58,7 +58,8 @@ startup_timeout_sec = 30
 
 > Codex 桌面版启动 MCP 时，工作目录是它自己的程序目录（`AppData\Local\OpenAI\Codex\bin\<hash>`），不是你的项目目录。所以：
 > - **一定要加 `--name codex`**，否则名字会变成 `codex@<hash>` 这种，而且所有项目的 Codex 都挤在这一个目录名下。同时开两个 Codex 时，第二个自动叫 `codex-2`。
-> - 要用 `export_context` 时，先让 Codex 调用一次 `set_cwd`，指向项目目录（例如"调用 kopitiam 的 set_cwd，设成 C:\Projects\YourProject"），否则找不到它的对话记录。只收发消息的话不用做这一步。
+> - `export_context` 不用再先 `set_cwd`：Codex 每次调用 kopitiam 的工具都会带上当前对话的 ID（`_meta.threadId`），kopitiam 按它直接找到那个对话的记录文件（`rollout-…-<对话ID>.jsonl`）。
+> - 命令行版 Codex 默认每次调用 MCP 工具都会问「Allow the kopitiam MCP server to run tool …?」，嫌麻烦就选「Always allow」。
 
 **pi**（`~/.pi/agent/mcp.json` 的 `mcpServers` 里加一项，别覆盖已有的 `exa`）：
 
@@ -139,7 +140,7 @@ startup_timeout_sec = 30
 |---|---|---|
 | Claude Code | ✅ 支持 | Claude Code 自己的 hooks，**不需要登录 claude.ai 账号**（API key、Bedrock 等都能用） |
 | pi | ✅ 支持 | pi 扩展（`pi.sendUserMessage`） |
-| Codex | 适配中 | 见下面「Codex 为什么还不行」 |
+| Codex | ⚠️ 一半 | Stop hook 接力：**忙的时候收到，这一轮做完接着读；闲着的时候叫不醒**（见下面「Codex」） |
 | dsh | 适配中 | 网页上会显示「还不支持自动唤醒」 |
 
 **Claude Code 安装**（只做一次）：
@@ -165,11 +166,19 @@ kopitiam setup pi --remove  # 删掉
 
 装好后**重开 pi** 才生效。原理和 Claude 一样：扩展在 pi 启动时建 `~/.kopitiam/wake/pi-<进程号>.signal` 并监视它，读到新提示就用 `pi.sendUserMessage` 交给 pi（空闲时马上开始，正在忙就排在这一轮后面）。在 pi 1.3.0 上验证过：空闲的 pi 被叫醒后自己 `read`、再用 `send` 回复。
 
-**Codex 为什么还不行**（在 codex-cli 0.162 上试过）：
-- Codex 的 hooks 叫不醒空闲的对话（官方文档：后台 hook 结束「不会开始新的回合」）。
-- `codex queue --thread <ID> --message …` 能叫醒**命令行版**的空闲对话（命令行版的对话由共享的 app-server daemon 托管）。
-- 但 **ChatGPT 桌面版里的 Codex** 用的是桌面版自己私有的 app-server，`codex queue` 碰不到；硬用的话 daemon 会在后台再加载一份同一个对话，可能和桌面版同时写记录。
-- 另外 kopitiam 的 MCP 进程拿不到对话 ID，桌面版一个 codex 进程又管着所有对话，还要先解决「叫醒哪个对话」。
+**Codex**（只做一次）：
+
+```powershell
+kopitiam setup codex           # 往 ~/.codex/hooks.json 加两个 hook（有 CODEX_HOME 就用它），原文件备份成 hooks.json.bak
+kopitiam setup codex --remove  # 删掉
+```
+
+装好后 Codex 会让你确认信任这两个新 hook（命令行版用 `/hooks` 查看），确认后重开 Codex。然后在**要接收消息的那个对话**里先用一次 kopitiam（比如让它调用 `whoami`），kopitiam 才知道是哪个对话。
+
+原理（在 codex-cli 0.163 上验证过：对话这一轮结束时被接力，自己 `read`、再用 `send` 回复）：
+- **哪个对话**：一个 Codex 进程（桌面版、或者一个命令行窗口）管着好几个对话。Codex 每次调用 MCP 工具都会在 `_meta.threadId` 里带上当前对话 ID，kopitiam 记下最近一次的，只交给这个对话。
+- **怎么交**：`SessionStart` hook 建 `~/.kopitiam/wake/codex-<codex 进程号>.signal`；要叫醒时感知模块把提示写进去；`Stop` hook 在那个对话这一轮结束时看到提示，就返回 `{"decision": "block", "reason": 提示}`，Codex 接着去 `read`。别的对话结束时不交；用户在这期间已经让它读过了也不交。
+- **为什么叫不醒闲着的对话**：Codex 的 hooks 不能主动开始新回合（官方文档：后台 hook 结束「不会开始新的回合」）。`codex queue` 只能进到共享 app-server daemon 托管的对话，而桌面版和命令行窗口默认都用自己内置的服务；硬用的话 daemon 会另外加载一份同一个对话，两个进程同时写记录。所以只有 kopitiam 的 MCP 进程本身挂在 daemon 下面时，才改用 `codex queue`（这时闲着也能叫醒）。
 
 **规则**：
 1. 只有点名发给它的消息才叫醒；发给所有人的广播不叫醒。
@@ -210,6 +219,8 @@ uv sync          # 建 .venv（uv 会自动装 Python 3.14）
 uv run pytest    # 跑全部测试
 ```
 
+手动试 agent 时，让 kopitiam 用临时数据目录（`KOPITIAM_HOME`），免得测试身份混进真的聊天室。注意 **Codex 只把少数环境变量传给 MCP 进程**，在外面设 `KOPITIAM_HOME` 没用，要这样传：`codex -c 'mcp_servers.kopitiam.env.KOPITIAM_HOME="C:/tmp/kp"'`（hooks 倒是会继承 Codex 自己的环境变量）。
+
 依赖只有 Python 3.14 标准库 + `mcp` + `psutil`（测试用 `pytest`）。注意 `mcp` 锁在 1.x：2.x 把 `FastMCP` 改名成了 `MCPServer`，本项目按 spec 使用 1.x 的接口。dsh 的会话记录是 zstd 压缩的，解压用的是 Python 3.14 标准库 `compression.zstd`。
 
 ## 旧身份：隐藏和自动清理
@@ -227,12 +238,12 @@ uv run pytest    # 跑全部测试
 ## 已知限制
 
 - **身份可能互换**：在同一个文件夹里开两个同类 agent 的话，重启后它们可能会互相拿到对方的名字。需要固定名字时用 `--name`。
-- **Codex 桌面版的工作目录不对**：它启动 MCP 时用的是自己的程序目录，所以配置里要加 `--name codex`，导出前要先 `set_cwd`（见上面"各 agent 接入 → Codex"）。
+- **Codex 桌面版的工作目录不对**：它启动 MCP 时用的是自己的程序目录，所以配置里要加 `--name codex`（见上面"各 agent 接入 → Codex"）。导出记录不受影响：按对话 ID 找。
 - **遮盖不保证完全**：`export_context` 会用正则遮盖常见的密钥/token，但只是尽量，不能保证全部遮住。导出文件发给别人/别的 agent 之前先扫一眼。
 - **网页只给本机用**：网页只监听 127.0.0.1 且校验 token；跨电脑只有「团队」里人和人之间的消息，走单独的团队端口，不能远程打开别人的网页。聊天内容明文存在本机 SQLite 里，团队消息在网络上也是明文（见「团队」）。
 - **团队暂不支持**：IPv6 地址、局域网自动发现（要手动输入 IP）、群聊（发给多个同事是分别投递）、agent 直接发给同事。
 - **不做**：往终端注入按键、多房间、加密。agent 只在用户叫它"看一下聊天室"、或者被自动唤醒时才调用 `read`。
-- **自动唤醒暂时只支持 Claude Code 和 pi**；Codex（见「Codex 为什么还不行」）、dsh 在适配中。
+- **自动唤醒**：Claude Code、pi 完整支持；Codex 只能「这一轮做完接着读」，闲着叫不醒（见「自动唤醒 → Codex」）；dsh 在适配中。
 - dsh 正在写入的会话按"当前已写完的帧"解析；正在生成的最后一帧不完整时不参与本次导出。
 
 ## 许可证

@@ -8,10 +8,11 @@ wake/<kind>-<agent 进程号>.signal；接收端监视这个文件，读到新�
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
-from ..config import wake_dir
+from ..config import safe, wake_dir
 
 TAKEN_MAX_AGE = 24 * 3600  # 去重标记留一天
 
@@ -24,11 +25,39 @@ def ready(kind: str, agent: dict) -> bool:
     return bool(agent.get("pid")) and path(kind, agent["pid"]).exists()
 
 
-def write(kind: str, call) -> None:
+def write(kind: str, call, **extra) -> None:
     p = path(kind, call.pid)
     if not p.exists():
         raise RuntimeError("信号文件不见了（agent 可能已经关掉）")
-    p.write_text(json.dumps({"id": call.wake_id, "text": call.text}, ensure_ascii=False), encoding="utf-8")
+    body = {"id": call.wake_id, "text": call.text, "upto": max(call.message_ids)} | extra
+    p.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+
+
+def read(p: Path) -> dict | None:
+    """读信号文件；赶上正在写的半截内容就稍等再读。空文件 = 没有要交的提示。"""
+    for _ in range(10):
+        try:
+            raw = p.read_text(encoding="utf-8").strip()
+            if not raw:
+                return None
+            obj = json.loads(raw)
+            return obj if isinstance(obj, dict) and obj.get("id") and obj.get("text") else None
+        except ValueError:
+            time.sleep(0.05)
+        except OSError:
+            return None
+    return None
+
+
+def take(wake_id: str) -> bool:
+    """同一次叫醒只交一次：接收端可能被触发好几次，谁先建出标记谁算数。"""
+    taken = wake_dir() / "taken"
+    taken.mkdir(parents=True, exist_ok=True)
+    try:
+        os.close(os.open(taken / safe(str(wake_id)), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        return False
+    return True
 
 
 def cleanup() -> None:

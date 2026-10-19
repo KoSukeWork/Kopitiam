@@ -30,6 +30,7 @@ class WakeCall:
     senders: list[str]
     prev_woken_upto: int = 0  # 叫醒失败时恢复成这个值，下一条新消息还能再叫
     text: str = field(default="")
+    thread_id: str | None = None  # 最近用过 kopitiam 的对话（只有 Codex 有，见 agents.thread_id）
 
     @property
     def wake_id(self) -> str:
@@ -159,7 +160,7 @@ def scan(check: Callable[[dict], str | None]) -> list[WakeCall]:
                     continue
                 senders = list(dict.fromkeys(names.get(r["sender_id"], "?") for r in ok))
                 call = WakeCall(a["id"], a["name"], a["kind"], a["pid"], [r["id"] for r in ok], senders,
-                                prev_woken_upto=a["woken_upto"])
+                                prev_woken_upto=a["woken_upto"], thread_id=a["thread_id"])
                 call.text = wake_text(senders, len(ok))
                 c.execute("UPDATE wake_state SET woken_upto=? WHERE agent_id=?", (max(call.message_ids), a["id"]))
                 calls.append(call)
@@ -170,16 +171,19 @@ def scan(check: Callable[[dict], str | None]) -> list[WakeCall]:
     return calls
 
 
-def record(call: WakeCall, error: str | None) -> None:
-    """适配器叫完以后记结果；失败时恢复 woken_upto，下一条新消息还能再叫。"""
+def record(call: WakeCall, error: str | None, note: str | None = None) -> None:
+    """适配器叫完以后记结果；失败时恢复 woken_upto，下一条新消息还能再叫。
+
+    note：适配器自己的说法（比如 Codex 桌面版只是「交给它，这一轮做完再读」），不给就是「已叫醒」。
+    """
     with closing(db.connect()) as c:
         if error:
             c.execute("UPDATE wake_state SET woken_upto=?, note=? WHERE agent_id=? AND woken_upto=?",
                       (call.prev_woken_upto, f"叫醒失败：{error}", call.agent_id, max(call.message_ids)))
         else:
+            what = f"{'、'.join(call.senders)} 的 {len(call.message_ids)} 条"
             c.execute("UPDATE wake_state SET woken_at=?, note=? WHERE agent_id=?",
-                      (time.time(), f"已叫醒（{'、'.join(call.senders)} 的 {len(call.message_ids)} 条）",
-                       call.agent_id))
+                      (time.time(), f"{note}（{what}）" if note else f"已叫醒（{what}）", call.agent_id))
 
 
 def set_enabled(agent_id: int, value: bool) -> None:

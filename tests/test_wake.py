@@ -210,10 +210,10 @@ def test_claude_adapter_end_to_end(room, monkeypatch):
     assert code == 2 and "kopitiam：你有 1 条新消息（来自 user）" in text
     assert claude.hook_wake(event, env) == (0, "")  # 同一次叫醒触发多次 FileChanged：只算一次
 
-    # B 是 codex：还没有适配器，记下原因
+    # B 是 codex：还没在对话里用过 kopitiam（不知道是哪个对话），记下原因
     _send(user, "B")
     assert service.run_once() == []
-    assert "还不支持" in _note(b)
+    assert "还没在对话里用过 kopitiam" in _note(b)
 
 
 def test_claude_hook_ignores_other_files_and_unlink(home):
@@ -393,3 +393,142 @@ def test_signals_cleanup_handles_every_kind(home):
         f.write_text("", encoding="utf-8")
     signals.cleanup()
     assert not any(f.exists() for f in dead) and alive.exists()
+
+
+# ---- Codex：记下对话 ID、Stop hook 接力、daemon 托管时用 codex queue ----
+
+
+def test_mcp_records_codex_thread_id(home):
+    import anyio
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from kopitiam import mcp_server
+
+    agent = mcp_server.start("codex", "C")
+
+    async def go():
+        async with create_connected_server_and_client_session(mcp_server.mcp) as client:
+            await client.call_tool("whoami", {})  # 没带 _meta：不记
+            assert _thread(agent) is None
+            await client.call_tool("whoami", {}, meta={"threadId": "thread-1"})
+            assert _thread(agent) == "thread-1"
+            await client.call_tool("read", {}, meta={"threadId": "thread-2"})  # 换了对话
+            assert _thread(agent) == "thread-2"
+
+    anyio.run(go)
+
+
+def _thread(agent_id: int):
+    with closing(db.connect()) as c:
+        return c.execute("SELECT thread_id FROM agents WHERE id=?", (agent_id,)).fetchone()[0]
+
+
+@pytest.fixture
+def codex_room(home, monkeypatch):
+    from kopitiam.wake import codex
+
+    db.init_db()
+    c = db.claim("codex", cwd=str(home), name="codex", pid=os.getpid())
+    db.set_thread(c, "thread-1")
+    monkeypatch.setattr(codex, "_codex_pid", lambda: os.getpid())  # hook 由这个 codex 进程启动
+    monkeypatch.setattr(codex, "hosted_by_daemon", lambda pid: False)  # 桌面版 / 命令行窗口内置服务
+    _scan()
+    return c, codex
+
+
+def test_codex_check_needs_thread_and_hook(home, monkeypatch):
+    from kopitiam.wake import codex
+
+    monkeypatch.setattr(codex, "hosted_by_daemon", lambda pid: False)
+    agent = {"kind": "codex", "pid": os.getpid(), "thread_id": None}
+    assert "还没在对话里用过 kopitiam" in codex.check(agent)
+    agent["thread_id"] = "t"
+    assert "kopitiam setup codex" in codex.check(agent)
+    monkeypatch.setattr(codex, "_codex_pid", lambda: os.getpid())
+    codex.hook_start()
+    assert codex.check(agent) is None and "闲着的时候叫不醒" in codex.hint(agent)
+    monkeypatch.setattr(codex, "hosted_by_daemon", lambda pid: True)
+    assert codex.hint(agent) is None
+
+
+def test_codex_stop_hook_hands_off_to_the_right_thread(codex_room):
+    c, codex = codex_room
+    codex.hook_start()
+    _send(db.user_id(), "codex", "帮我 review")
+    assert [(x.name, err) for x, err in service.run_once()] == [("codex", None)]
+    assert _note(c).startswith("已交给 Codex")
+
+    assert codex.hook_stop(json.dumps({"session_id": "other-thread"})) == ""  # 别的对话结束：不交
+    out = json.loads(codex.hook_stop(json.dumps({"session_id": "thread-1", "stop_hook_active": False})))
+    assert out["decision"] == "block" and "kopitiam：你有 1 条新消息" in out["reason"]
+    assert codex.hook_stop(json.dumps({"session_id": "thread-1"})) == ""  # 同一次只交一次
+
+
+def test_codex_stop_hook_skips_when_already_read(codex_room):
+    c, codex = codex_room
+    codex.hook_start()
+    _send(db.user_id(), "codex")
+    service.run_once()
+    Chat().read(c)  # 用户自己先让它读了
+    assert codex.hook_stop(json.dumps({"session_id": "thread-1"})) == ""
+
+
+def test_codex_daemon_uses_codex_queue(codex_room, monkeypatch):
+    c, codex = codex_room
+    monkeypatch.setattr(codex, "hosted_by_daemon", lambda pid: True)
+    monkeypatch.setattr(codex, "_exe", lambda pid: r"C:\daemon\codex.exe")
+    calls = []
+
+    class Done:
+        returncode, stdout, stderr = 0, "Queued message", ""
+
+    monkeypatch.setattr(codex.subprocess, "run", lambda args, **kw: calls.append(args) or Done())
+    _send(db.user_id(), "codex")
+    assert [(x.name, err) for x, err in service.run_once()] == [("codex", None)]
+    assert calls[0][:4] == [r"C:\daemon\codex.exe", "queue", "--thread", "thread-1"]
+    assert "kopitiam：你有 1 条新消息" in calls[0][5]
+    assert _note(c).startswith("已叫醒")
+
+
+def test_codex_install_keeps_other_hooks(home):
+    from kopitiam.wake import codex
+
+    path = home / "codex" / "hooks.json"
+    path.parent.mkdir()
+    other = {"hooks": [{"type": "command", "command": "edge.exe", "timeout": 10}]}
+    path.write_text(json.dumps({"description": "mine", "hooks": {"Stop": [other]}}), encoding="utf-8")
+    exe = r"C:\Users\me\.local\bin\kopitiam.exe"
+    codex.install(path, exe)
+    codex.install(path, exe)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["description"] == "mine"
+    assert data["hooks"]["Stop"][0] == other and len(data["hooks"]["Stop"]) == 2
+    assert data["hooks"]["Stop"][1]["hooks"][0]["command"] == exe + " hook codex-stop"
+    assert data["hooks"]["SessionStart"][0]["hooks"][0]["command"] == exe + " hook codex-start"
+    codex.install(path, exe, remove=True)
+    assert json.loads(path.read_text(encoding="utf-8"))["hooks"] == {"Stop": [other]}
+    assert codex.hook_entries(r"C:\Program Files\k\kopitiam.exe")["Stop"]["hooks"][0]["command"].startswith('"')
+
+
+def test_codex_export_uses_thread_file(home, monkeypatch):
+    from kopitiam.export import codex as codex_export
+
+    sessions = home / "fake-codex" / "sessions" / "2026" / "10" / "19"
+    sessions.mkdir(parents=True)
+    proj = home / "proj"
+    proj.mkdir()
+    rollout = sessions / "rollout-2026-10-19T10-00-00-abc-123.jsonl"
+    rollout.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in [
+        {"type": "session_meta", "payload": {"id": "abc-123", "cwd": str(proj)}},
+        {"type": "response_item", "timestamp": "2026-10-19T10:00:01Z",
+         "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "你好"}]}},
+    ]) + "\n", encoding="utf-8")
+    monkeypatch.setattr(codex_export, "ROOT", home / "fake-codex" / "sessions")
+    assert codex_export.find_by_thread("abc-123") == rollout
+    assert codex_export.find_by_thread("nope") is None and codex_export.find_by_thread("../x") is None
+
+    db.init_db()
+    c = db.claim("codex", cwd=r"C:\Codex\bin", name="codex", pid=os.getpid())  # 桌面版的工作目录不对
+    db.set_thread(c, "abc-123")
+    out = Chat().export_context(c)
+    assert out.startswith("已导出") and rollout.name in out

@@ -1108,7 +1108,7 @@ function wakeBadge(name) {  // 侧栏名字后面的小闪电：这个 agent 收
     b.classList.add("limit");
     b.title = w.note;
   } else {
-    b.title = "收到点名消息会被自动唤醒" + (w.note ? "\\n最近：" + w.note : "");
+    b.title = "收到点名消息会被自动唤醒" + (w.hint ? "\\n" + w.hint : "") + (w.note ? "\\n最近：" + w.note : "");
   }
   return b;
 }
@@ -1156,8 +1156,8 @@ function renderWake(body, w) {
     const info = el("div", "info");
     const line = el("div", "line1");
     line.append(el("span", "name", name), el("span", "kind", kindLabel(a.kind)));
-    info.append(line, el("div", "cwd" + (a.warn ? " warn" : ""), a.reason || a.note || "可以叫醒"));
-    info.title = a.reason || a.note || "";
+    info.append(line, el("div", "cwd" + (a.warn ? " warn" : ""), a.reason || a.note || a.hint || "可以叫醒"));
+    info.title = [a.reason || a.note, a.hint].filter(Boolean).join("\\n");
     r.append(avatar(name, true, true, a.kind), info);
     if (a.supported) {  // 还没适配的 agent 不给开关，免得以为它会被叫醒
       const s = el("button", "switch" + (a.enabled ? " on" : ""));
@@ -1170,7 +1170,8 @@ function renderWake(body, w) {
 
   const s4 = el("div", "tsec");
   s4.append(el("div", "mnote",
-    "Claude Code、pi：各运行一次 kopitiam setup claude / kopitiam setup pi，然后重开它们（Claude 不需要登录 claude.ai 账号）。Codex、dsh 还在适配中。" +
+    "Claude Code、Codex、pi：各运行一次 kopitiam setup claude / codex / pi，然后重开它们（Claude 不需要登录 claude.ai 账号）。" +
+    "Codex 闲着的时候叫不醒，只能在它这一轮做完时接着读。dsh 还在适配中。" +
     "被叫醒的 agent 用的是它当前会话的权限：开了跳过权限的会话，别的 agent 也能让它执行命令。"));
   body.append(s1, s2, s3, s4);
 }

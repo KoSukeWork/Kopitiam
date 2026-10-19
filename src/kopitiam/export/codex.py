@@ -15,10 +15,22 @@ PATTERN = "**/rollout-*.jsonl"
 
 def find_session(cwd: str, home: Path | None = None) -> Path | None:
     root = (home / ".codex" / "sessions") if home else ROOT
-    return find_by_cwd(root, PATTERN, _header_cwd, cwd)
+    return find_by_cwd(root, PATTERN, header_cwd, cwd)
 
 
-def _header_cwd(path: Path) -> str | None:
+def find_by_thread(thread_id: str, home: Path | None = None) -> Path | None:
+    """记录文件名的结尾就是对话 ID：rollout-<时间>-<对话ID>.jsonl（归档的在 archived_sessions）。"""
+    if not thread_id or not all(ch.isalnum() or ch == "-" for ch in thread_id):
+        return None
+    base = (home / ".codex") if home else ROOT.parent
+    for root in (base / "sessions", base / "archived_sessions"):
+        hits = sorted(root.glob(f"**/rollout-*-{thread_id}.jsonl")) if root.is_dir() else []
+        if hits:
+            return hits[-1]
+    return None
+
+
+def header_cwd(path: Path) -> str | None:
     with path.open(encoding="utf-8", errors="replace") as f:
         first = f.readline()
     try:

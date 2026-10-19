@@ -13,13 +13,10 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
-import sys
-import time
 from pathlib import Path
 
-from ..config import norm, safe, wake_dir
-from . import signals
+from ..config import norm, wake_dir
+from . import hookfile, signals
 
 
 def signal_path(pid: int) -> Path:
@@ -67,22 +64,6 @@ def hook_start(env=os.environ) -> str:
     return json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "watchPaths": [str(sig)]}})
 
 
-def _read_signal(p: Path) -> dict | None:
-    """读信号文件；赶上正在写的半截内容就稍等再读。"""
-    for _ in range(10):
-        try:
-            raw = p.read_text(encoding="utf-8").strip()
-            if not raw:
-                return None
-            obj = json.loads(raw)
-            return obj if isinstance(obj, dict) else None
-        except ValueError:
-            time.sleep(0.05)
-        except OSError:
-            return None
-    return None
-
-
 def hook_wake(stdin_text: str, env=os.environ) -> tuple[int, str]:
     """FileChanged：返回 (退出码, 给 Claude 看的文字)。2 = 叫醒；0 = 不是给我的 / 已经处理过。"""
     try:
@@ -95,14 +76,9 @@ def hook_wake(stdin_text: str, env=os.environ) -> tuple[int, str]:
     fp = data.get("file_path") or ""
     if pid is None or not fp or norm(fp) != norm(signal_path(pid)):
         return 0, ""  # 同一个会话里别的被监视的文件
-    obj = _read_signal(Path(fp))
-    if not obj or not obj.get("text") or not obj.get("id"):
-        return 0, ""
-    taken = wake_dir() / "taken"
-    taken.mkdir(parents=True, exist_ok=True)
-    try:  # 一次写入可能触发好几次 FileChanged：谁先建出标记谁算数
-        os.close(os.open(taken / safe(str(obj["id"])), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-    except FileExistsError:
+    obj = signals.read(Path(fp))
+    # 一次写入可能触发好几次 FileChanged：只交一次
+    if not obj or not signals.take(obj["id"]):
         return 0, ""
     return 2, str(obj["text"])
 
@@ -112,17 +88,6 @@ def hook_wake(stdin_text: str, env=os.environ) -> tuple[int, str]:
 def settings_path() -> Path:
     base = os.environ.get("CLAUDE_CONFIG_DIR")
     return (Path(base) if base else Path.home() / ".claude") / "settings.json"
-
-
-def exe_path() -> str:
-    """kopitiam 可执行文件的绝对路径（hook 里要写绝对路径）。"""
-    me = Path(sys.argv[0])
-    if me.stem.lower() == "kopitiam" and me.exists():
-        return str(me.resolve())
-    found = shutil.which("kopitiam")
-    if found:
-        return str(Path(found).resolve())
-    raise RuntimeError("找不到 kopitiam 可执行文件，请先用 uv tool install 安装")
 
 
 def hook_entries(exe: str) -> dict:
@@ -143,22 +108,4 @@ def _is_ours(group) -> bool:
 
 def install(settings: Path, exe: str, *, remove: bool = False) -> str:
     """只增删 kopitiam 自己的两个 hook，不动别的；改之前先备份成 settings.json.bak。"""
-    data: dict = {}
-    if settings.exists():
-        raw = settings.read_text(encoding="utf-8")
-        data = json.loads(raw) if raw.strip() else {}
-        shutil.copy2(settings, settings.with_name(settings.name + ".bak"))
-    hooks = data.setdefault("hooks", {})
-    for event, group in hook_entries(exe).items():
-        groups = [g for g in hooks.get(event, []) if not _is_ours(g)]
-        if not remove:
-            groups.append(group)
-        if groups:
-            hooks[event] = groups
-        else:
-            hooks.pop(event, None)
-    if not hooks:
-        data.pop("hooks")
-    settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return "已删除" if remove else "已安装"
+    return hookfile.merge(settings, hook_entries(exe), _is_ours, remove=remove)

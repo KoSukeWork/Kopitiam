@@ -37,7 +37,7 @@ from .config import (
     valid_name,
 )
 
-SCHEMA_VERSION = "3"  # 2：加了团队（peers / outbox / messages.remote_uid）；3：加了自动唤醒（wake_state）
+SCHEMA_VERSION = "4"  # 2：团队（peers / outbox / messages.remote_uid）；3：自动唤醒（wake_state）；4：agents.thread_id
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS wake_state(
 #   secret = 配对时生成的共享密钥（HMAC 签名用）；agent_id = 本机为这个人建的身份（kind='remote'）。
 # outbox：发给远端的人的消息，后台线程负责投递；status = pending / sent。
 # messages.remote_uid：别人发来的消息的全局 id（「对方 node_id:对方消息 id」），用来去重。
+# agents.thread_id：最近一次调用 kopitiam 工具的对话 ID（Codex 在 _meta.threadId 里带上；其他 agent 为空）。
+#   一个 Codex 进程管着好几个对话，靠它知道自动唤醒、导出记录该找哪个对话。
 # wake_state：自动唤醒的进度（只有感知模块读写，见 wake/detector.py）。seen_upto = 这个 id 及以前的消息
 #   已经判断过要不要叫醒；woken_upto = 最近一次叫醒时包含的最大消息 id（agent 读到这里之前不重复叫）；
 #   note = 最近一次的结果，给网页显示；enabled = 用户在网页上关掉某个 agent 的自动唤醒时为 0。
@@ -133,14 +135,15 @@ def init_db() -> None:
         c.executescript(SCHEMA)
         c.execute("BEGIN IMMEDIATE")
         try:
-            # v1 → v2：messages 加 remote_uid 列（几个进程可能同时启动，重复加列的错误忽略）
-            cols = {r[1] for r in c.execute("PRAGMA table_info(messages)")}
-            if "remote_uid" not in cols:
-                try:
-                    c.execute("ALTER TABLE messages ADD COLUMN remote_uid TEXT")
-                except sqlite3.OperationalError as e:
-                    if "duplicate column" not in str(e):
-                        raise
+            # v1 → v2：messages 加 remote_uid 列；v3 → v4：agents 加 thread_id 列
+            # （几个进程可能同时启动，重复加列的错误忽略）
+            for table, col in (("messages", "remote_uid"), ("agents", "thread_id")):
+                if col not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
+                    try:
+                        c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+                    except sqlite3.OperationalError as e:
+                        if "duplicate column" not in str(e):
+                            raise
             c.execute("CREATE UNIQUE INDEX IF NOT EXISTS messages_remote_uid ON messages(remote_uid)")
             c.execute(
                 "INSERT INTO meta(key, value) VALUES('schema_version', ?)"
@@ -415,6 +418,12 @@ def release(agent_id: int, host: int | None = None) -> None:
                 c.execute("UPDATE agents SET pid=NULL, pid_ctime=NULL WHERE id=? AND pid=?", (agent_id, host))
     except Exception:
         pass  # 退出清理尽力而为
+
+
+def set_thread(agent_id: int, thread_id: str) -> None:
+    """记下这个 agent 最近一次调用 kopitiam 的对话 ID（只有 Codex 会带，见 agents.thread_id）。"""
+    with _conn() as c:
+        c.execute("UPDATE agents SET thread_id=? WHERE id=?", (thread_id, agent_id))
 
 
 def _ago_cutoff(seconds: int) -> str:
@@ -1070,10 +1079,17 @@ class Chat:
                 me_row = self._me(c, me)
                 self._touch(c, me)
                 kind, cwd, name = me_row["kind"], me_row["cwd"], me_row["name"]
+                thread = me_row["thread_id"]
                 c.execute("COMMIT")
             except BaseException:
                 c.execute("ROLLBACK")
                 raise
+        if kind == "codex" and thread and not session_file:
+            # Codex 记下了正在用 kopitiam 的对话：直接用它的记录文件，不用按工作目录猜（也就不用先 set_cwd）
+            from .export import codex as codex_export
+            found = codex_export.find_by_thread(thread)
+            if found:
+                session_file, cwd = str(found), codex_export.header_cwd(found) or cwd
         try:
             out, stats = run_export(kind, cwd, name, mode=mode, session_file=session_file)
         except ExportError as e:

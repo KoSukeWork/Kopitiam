@@ -8,21 +8,20 @@ from typing import Callable
 
 from .. import db
 from ..config import WAKE_INTERVAL, WAKE_MAX_ROUNDS
-from . import claude, detector, pi, signals
+from . import claude, codex, detector, pi, signals
 from .detector import WakeCall
 
-ADAPTERS = {"claude": claude, "pi": pi}
+# 每个适配器：check(agent) -> 叫不醒的原因或 None；wake(call) -> 结果说明或 None（= 已叫醒），失败抛异常；
+# 可选 hint(agent) -> 能叫醒但有限制时的说明（给网页显示）
+ADAPTERS = {"claude": claude, "codex": codex, "pi": pi}
 HEARTBEAT = 10  # 每隔几秒在库里记一次「自动唤醒在运行」，网页据此提示有没有在跑
 CLEANUP = 600   # 每隔几秒清理一次关掉的 agent 留下的信号文件
-
-
-UNSUPPORTED = {"codex": "Codex 还不支持自动唤醒（桌面版的对话叫不醒，见 README）"}
 
 
 def check(agent: dict) -> str | None:
     mod = ADAPTERS.get(agent["kind"])
     if mod is None:
-        return UNSUPPORTED.get(agent["kind"], f"{agent['kind']} 还不支持自动唤醒")
+        return f"{agent['kind']} 还不支持自动唤醒"
     return mod.check(agent)
 
 
@@ -30,12 +29,12 @@ def run_once() -> list[tuple[WakeCall, str | None]]:
     """感知一轮并叫醒；返回 [(叫醒了谁, 失败原因或 None)]。"""
     results = []
     for call in detector.scan(check):
+        note = err = None
         try:
-            ADAPTERS[call.kind].wake(call)
-            err = None
+            note = ADAPTERS[call.kind].wake(call)
         except Exception as e:
             err = str(e) or type(e).__name__
-        detector.record(call, err)
+        detector.record(call, err, note)
         results.append((call, err))
     return results
 
@@ -55,11 +54,14 @@ def overview() -> dict:
             continue  # 没开着的不会被叫醒，也不用显示
         s = st.get(r["id"], {})
         note, reason = s.get("note", ""), check(dict(r))
-        supported = r["kind"] in ADAPTERS
+        mod = ADAPTERS.get(r["kind"])
+        supported = mod is not None
         limited = "连续来回超过" in note
+        hint = getattr(mod, "hint", None)
         agents[r["name"]] = {
             "kind": r["kind"], "enabled": s.get("enabled", True), "supported": supported,
             "reason": reason, "note": note, "limited": limited, "woken_at": s.get("woken_at"),
+            "hint": hint(dict(r)) if hint and not reason else None,
             # 要用户处理的情况：没装 hook、来回超过上限、叫醒失败（还没适配的 agent 不算）
             "warn": supported and bool(reason or limited or note.startswith("叫醒失败")),
         }
