@@ -506,6 +506,8 @@ def test_codex_install_keeps_other_hooks(home):
     assert data["hooks"]["Stop"][0] == other and len(data["hooks"]["Stop"]) == 2
     assert data["hooks"]["Stop"][1]["hooks"][0]["command"] == exe + " hook codex-stop"
     assert data["hooks"]["SessionStart"][0]["hooks"][0]["command"] == exe + " hook codex-start"
+    busy = data["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+    assert busy["command"] == exe + " hook codex-busy" and busy["async"] is True  # 不拖慢你发消息
     codex.install(path, exe, remove=True)
     assert json.loads(path.read_text(encoding="utf-8"))["hooks"] == {"Stop": [other]}
     assert codex.hook_entries(r"C:\Program Files\k\kopitiam.exe")["Stop"]["hooks"][0]["command"].startswith('"')
@@ -552,32 +554,70 @@ def _old(path: Path, seconds: int) -> None:
     os.utime(path, (t, t))
 
 
-def test_codex_remind_when_idle_once(codex_room, toasts, monkeypatch):
-    from kopitiam.export import codex as codex_export
-
-    c, codex = codex_room
+def _hand_off(codex) -> Path:
     codex.hook_start()
     _send(db.user_id(), "codex", "帮我 review")
     service.run_once()
-    sig = signals_path("codex")
-    codex.remind()
-    assert toasts == []  # 刚交出去：先等它这一轮做完
+    return signals_path("codex")
 
-    _old(sig, 120)
-    rollout = Path(codex_export.ROOT) / "fake"  # 对话记录：最近还在动 = 在忙
-    monkeypatch.setattr(codex_export, "find_by_thread", lambda t: rollout)
-    rollout.parent.mkdir(parents=True, exist_ok=True)
-    rollout.write_text("{}", encoding="utf-8")
+
+def test_codex_remind_fast_when_hooks_say_idle(codex_room, toasts):
+    c, codex = codex_room
+    codex.hook_busy(json.dumps({"session_id": "thread-1"}))  # 开始一轮
+    sig = _hand_off(codex)
+    _old(sig, 60)
+    codex.remind()
+    assert toasts == []  # 正在一轮里：做完 Stop hook 会接力，不打扰
+
+    codex.hook_stop(json.dumps({"session_id": "other-thread"}))  # 别的对话结束不算
     codex.remind()
     assert toasts == []
 
-    _old(rollout, 120)  # 闲着了
+    codex.hook_busy(json.dumps({"session_id": "thread-1"}))
+    codex._set_busy("thread-1", False)  # 这一轮结束、没有可接力的 → 闲着
+    _old(sig, codex.REMIND_IDLE - 2)
+    codex.remind()
+    assert toasts == []  # 刚交出去，给它两三秒
+    _old(sig, codex.REMIND_IDLE + 1)
     codex.remind()
     codex.remind()
     assert len(toasts) == 1  # 同一批只提醒一次
     title, body, link = toasts[0]
     assert "codex 有新消息在等它" in title and "user 发来 1 条" in body
     assert link == "codex://threads/thread-1"
+
+
+def test_codex_stop_records_idle_and_busy(codex_room):
+    c, codex = codex_room
+    codex.hook_start()
+    codex.hook_stop(json.dumps({"session_id": "thread-1"}))  # 没东西可接力：这一轮结束
+    assert codex._busy("thread-1") is False
+    codex.hook_busy(json.dumps({"session_id": "thread-1"}))
+    assert codex._busy("thread-1") is True
+    _send(db.user_id(), "codex")
+    service.run_once()
+    assert codex.hook_stop(json.dumps({"session_id": "thread-1"}))  # 接力：接着忙
+    assert codex._busy("thread-1") is True
+    codex._set_busy("thread-1", True)
+    st = codex._state_path("thread-1")
+    st.write_text(json.dumps({"busy": True, "at": time.time() - codex.STATE_STALE - 1}), encoding="utf-8")
+    assert codex._busy("thread-1") is None  # 「正在忙」记得太久（Codex 中途崩了）：不信它
+
+
+def test_codex_remind_falls_back_to_rollout_without_state(codex_room, toasts, home, monkeypatch):
+    from kopitiam.export import codex as codex_export
+
+    c, codex = codex_room
+    sig = _hand_off(codex)  # 没装 codex-busy hook：不知道忙不忙
+    rollout = home / "rollout-fake.jsonl"  # 对话记录：最近还在动 = 在忙
+    rollout.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(codex_export, "find_by_thread", lambda t: rollout)
+    _old(sig, codex.REMIND_AFTER + 1)
+    codex.remind()
+    assert toasts == []
+    _old(rollout, codex.IDLE_FOR + 1)  # 记录文件好一阵没动：当它闲着
+    codex.remind()
+    assert len(toasts) == 1
 
 
 def test_codex_remind_skips_taken_signal(codex_room, toasts):

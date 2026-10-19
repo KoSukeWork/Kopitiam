@@ -11,6 +11,8 @@ Codex 每次调用 kopitiam 的工具，都在 _meta.threadId 里带上当前对
 
 SessionStart hook（kopitiam hook codex-start）建信号文件 wake/codex-<托管对话的 codex 进程号>.signal；
 hook 和 kopitiam 的 MCP 进程都由这个 codex 进程启动，所以进程号对得上。
+闲着的对话叫不醒，就弹 Windows 通知提醒用户（remind）。为了知道对话是不是闲着，
+UserPromptSubmit hook（codex-busy，后台运行）记「开始一轮」，Stop hook 不接力时记「这一轮结束」。
 """
 from __future__ import annotations
 
@@ -20,12 +22,14 @@ import subprocess
 import time
 from pathlib import Path
 
-from ..config import wake_dir
+from ..config import safe, wake_dir
 from . import hookfile, notify, signals
 
 HANDED_OFF = "已交给 Codex：它这一轮做完会接着读（闲着的话会弹通知提醒你）"
-REMIND_AFTER = 45  # 交出去这么久还没被接走，就提醒用户（秒）
-IDLE_FOR = 30      # 那个对话的记录文件这么久没动 = Codex 闲着（秒）
+REMIND_IDLE = 3     # 对话闲着（hook 记下的状态）：交出去这么久还没被接走就提醒（秒）
+REMIND_AFTER = 20   # 不知道对话忙不忙时（还没装记录状态的 hook）：交出去这么久还没被接走、
+IDLE_FOR = 15       # 并且记录文件这么久没动，才当它闲着（秒）
+STATE_STALE = 1800  # 「正在忙」记了这么久还没结束（比如 Codex 中途崩了）：不再相信它（秒）
 
 
 def _exe(pid: int | None) -> str:
@@ -82,15 +86,22 @@ def remind() -> None:
     now = time.time()
     for f in wake_dir().glob("codex-*.signal"):
         obj = signals.read(f)
-        if not obj or signals.taken(obj["id"]) or now - f.stat().st_mtime < REMIND_AFTER:
+        if not obj or signals.taken(obj["id"]):
             continue
+        age = now - f.stat().st_mtime
         pid = f.stem.rpartition("-")[2]
         if not pid.isdigit() or not psutil.pid_exists(int(pid)):
             continue  # Codex 已经关了
         thread = obj.get("thread")
-        rollout = find_by_thread(thread) if thread else None
-        if rollout and now - rollout.stat().st_mtime < IDLE_FOR:
-            continue  # 还在忙：这一轮做完会自己接力
+        busy = _busy(thread) if thread else None
+        if busy:
+            continue  # 正在一轮里：这一轮做完 Stop hook 会接力
+        if busy is None:  # 不知道忙不忙：按记录文件有没有在动来猜，等久一点免得在它忙的时候打扰
+            rollout = find_by_thread(thread) if thread else None
+            if age < REMIND_AFTER or (rollout and now - rollout.stat().st_mtime < IDLE_FOR):
+                continue
+        elif age < REMIND_IDLE:
+            continue
         if not signals.take(f"remind-{obj['id']}"):
             continue  # 这一批已经提醒过
         who = "、".join(obj.get("senders") or []) or "有人"
@@ -98,6 +109,32 @@ def remind() -> None:
                      f"{who} 发来 {obj.get('count') or 1} 条。Codex 闲着时叫不醒："
                      "点这里打开那个对话，随便跟它说一句，它这一轮做完就会去读。",
                      f"codex://threads/{thread}" if thread else "codex://")
+
+
+# ---- 每个对话忙不忙：UserPromptSubmit = 开始一轮，Stop 不接力 = 这一轮结束 ----
+
+def _state_path(thread: str) -> Path:
+    return wake_dir() / "codex-state" / f"{safe(thread)}.json"
+
+
+def _set_busy(thread: str | None, busy: bool) -> None:
+    if not thread:
+        return
+    p = _state_path(thread)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"busy": busy, "at": time.time()}), encoding="utf-8")
+
+
+def _busy(thread: str) -> bool | None:
+    """True = 正在一轮里；False = 闲着；None = 不知道（没装新版 hook，或者「正在忙」记得太久不可信）。"""
+    try:
+        st = json.loads(_state_path(thread).read_text(encoding="utf-8"))
+        busy, at = bool(st["busy"]), float(st["at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if busy and time.time() - at > STATE_STALE:
+        return None
+    return busy
 
 
 # ---- hook（Codex 那边调用） ----
@@ -121,9 +158,24 @@ def hook_start() -> None:
         return
     wake_dir().mkdir(parents=True, exist_ok=True)
     signals.cleanup()
+    for f in (wake_dir() / "codex-state").glob("*.json"):  # 一天以前的对话状态没用了
+        try:
+            if time.time() - f.stat().st_mtime > signals.TAKEN_MAX_AGE:
+                f.unlink()
+        except OSError:
+            pass
     sig = signals.path("codex", pid)
     if not sig.exists():
         sig.write_text("", encoding="utf-8")
+
+
+def hook_busy(stdin_text: str) -> None:
+    """UserPromptSubmit（后台运行，不拖慢你发消息）：这个对话开始了新的一轮。"""
+    try:
+        data = json.loads(stdin_text or "{}")
+    except ValueError:
+        return
+    _set_busy(data.get("session_id"), True)
 
 
 def _already_read(pid: int, upto) -> bool:
@@ -144,11 +196,18 @@ def hook_stop(stdin_text: str) -> str:
         data = json.loads(stdin_text or "{}")
     except ValueError:
         return ""
+    session = data.get("session_id")
+    out = _handoff(session)
+    _set_busy(session, bool(out))  # 接力 = 接着忙；不接力 = 这一轮结束，闲着了
+    return out
+
+
+def _handoff(session: str | None) -> str:
     pid = _codex_pid()
     obj = signals.read(signals.path("codex", pid)) if pid else None
     if not obj:
         return ""
-    thread, session = obj.get("thread"), data.get("session_id")
+    thread = obj.get("thread")
     if thread and session and thread != session:
         return ""  # 同一个 Codex 里别的对话：留给用过 kopitiam 的那个
     if not signals.take(obj["id"]) or _already_read(pid, obj.get("upto")):
@@ -157,7 +216,7 @@ def hook_stop(stdin_text: str) -> str:
     return json.dumps({"decision": "block", "reason": obj["text"]})
 
 
-# ---- 安装：把两个 hook 写进 ~/.codex/hooks.json ----
+# ---- 安装：把三个 hook 写进 ~/.codex/hooks.json ----
 
 def hooks_path() -> Path:
     base = os.environ.get("CODEX_HOME")
@@ -168,6 +227,8 @@ def hook_entries(exe: str) -> dict:
     cmd = f'"{exe}"' if " " in exe else exe  # Codex 的 command 是一整行命令
     return {
         "SessionStart": {"hooks": [{"type": "command", "command": f"{cmd} hook codex-start", "timeout": 10}]},
+        "UserPromptSubmit": {"hooks": [{"type": "command", "command": f"{cmd} hook codex-busy", "timeout": 10,
+                                        "async": True}]},
         "Stop": {"hooks": [{"type": "command", "command": f"{cmd} hook codex-stop", "timeout": 10}]},
     }
 
@@ -181,7 +242,7 @@ def _is_ours(group) -> bool:
 
 
 def install(path: Path, exe: str, *, remove: bool = False) -> str:
-    """只增删 kopitiam 自己的两个 hook，不动别的；改之前先备份成 hooks.json.bak。
+    """只增删 kopitiam 自己的几个 hook，不动别的；改之前先备份成 hooks.json.bak。
     顺便登记 Windows 通知的发送者名字（Codex 闲着时靠通知提醒用户）。"""
     done = hookfile.merge(path, hook_entries(exe), _is_ours, remove=remove)
     if remove:

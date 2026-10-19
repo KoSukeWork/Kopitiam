@@ -16,7 +16,7 @@ from .detector import WakeCall
 ADAPTERS = {"claude": claude, "codex": codex, "pi": pi}
 HEARTBEAT = 10  # 每隔几秒在库里记一次「自动唤醒在运行」，网页据此提示有没有在跑
 CLEANUP = 600   # 每隔几秒清理一次关掉的 agent 留下的信号文件
-REMIND = 10     # 每隔几秒调一次适配器的 remind()
+REMIND = 2      # 每隔几秒调一次适配器的 remind()（只看几个小文件，很便宜）
 
 
 def check(agent: dict) -> str | None:

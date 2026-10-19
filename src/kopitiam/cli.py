@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--remove", action="store_true", help="删掉 kopitiam 加的配置")
 
     ph = sub.add_parser("hook", help="给 agent 的 hook 调用（不用手动运行）")
-    ph.add_argument("event", choices=["claude-start", "claude-wake", "codex-start", "codex-stop"])
+    ph.add_argument("event", choices=["claude-start", "claude-wake", "codex-start", "codex-busy", "codex-stop"])
 
     pe = sub.add_parser("export", help="调试用：导出某个 agent 的对话记录")
     pe.add_argument("--agent", required=True, choices=["claude", "codex", "pi", "dsh"])
@@ -85,7 +85,7 @@ def _run_wake() -> int:
 
 SETUP_DONE = {
     "claude": "重开 Claude Code 后生效。",
-    "codex": "Codex 会让你确认信任这两个新 hook（命令行版用 /hooks 查看），确认后重开 Codex。\n"
+    "codex": "Codex 会让你确认信任这几个新 hook（命令行版用 /hooks 查看），确认后重开 Codex。\n"
              "另外，要在接收消息的那个对话里先用一次 kopitiam（比如让它调用 whoami），kopitiam 才知道是哪个对话。",
 }
 
@@ -141,6 +141,8 @@ def _run_hook(event: str) -> int:
             from .wake import codex
             if event == "codex-start":
                 codex.hook_start()
+            elif event == "codex-busy":
+                codex.hook_busy(stdin)
             else:
                 out = codex.hook_stop(stdin)
                 if out:
