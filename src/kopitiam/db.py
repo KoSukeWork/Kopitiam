@@ -37,7 +37,7 @@ from .config import (
     valid_name,
 )
 
-SCHEMA_VERSION = "4"  # 2：团队（peers / outbox / messages.remote_uid）；3：自动唤醒（wake_state）；4：agents.thread_id
+SCHEMA_VERSION = "5"  # 2：团队（peers / outbox / messages.remote_uid）；3：自动唤醒（wake_state）；4：agents.thread_id；5：wake_state.woken_pid
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS wake_state(
 #   一个 Codex 进程管着好几个对话，靠它知道自动唤醒、导出记录该找哪个对话。
 # wake_state：自动唤醒的进度（只有感知模块读写，见 wake/detector.py）。seen_upto = 这个 id 及以前的消息
 #   已经判断过要不要叫醒；woken_upto = 最近一次叫醒时包含的最大消息 id（agent 读到这里之前不重复叫）；
+#   woken_pid = 那次叫醒交给的 agent 进程（agent 换了进程，说明那次多半没送到，可以再叫）；
 #   note = 最近一次的结果，给网页显示；enabled = 用户在网页上关掉某个 agent 的自动唤醒时为 0。
 
 
@@ -135,12 +136,13 @@ def init_db() -> None:
         c.executescript(SCHEMA)
         c.execute("BEGIN IMMEDIATE")
         try:
-            # v1 → v2：messages 加 remote_uid 列；v3 → v4：agents 加 thread_id 列
+            # v1 → v2：messages 加 remote_uid 列；v3 → v4：agents 加 thread_id 列；v4 → v5：wake_state 加 woken_pid 列
             # （几个进程可能同时启动，重复加列的错误忽略）
-            for table, col in (("messages", "remote_uid"), ("agents", "thread_id")):
+            for table, col, typ in (("messages", "remote_uid", "TEXT"), ("agents", "thread_id", "TEXT"),
+                                    ("wake_state", "woken_pid", "INTEGER")):
                 if col not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
                     try:
-                        c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+                        c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
                     except sqlite3.OperationalError as e:
                         if "duplicate column" not in str(e):
                             raise

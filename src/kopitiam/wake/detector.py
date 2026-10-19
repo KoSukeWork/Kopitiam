@@ -4,7 +4,8 @@
 1. 只有点名发给它的消息才叫醒；发给所有人的广播不叫醒。
 2. 用户发的（包括转发的）总是叫醒；agent 发给 agent 的，两个 agent 之间连续来回超过上限就不叫醒
    （消息照常送到）。用户对其中任何一个说话、或者两个 agent 之间 WAKE_CHAIN_IDLE 没说话，就重新计数。
-3. 叫醒以后，它读到那一批之前，再来新消息不重复叫。
+3. 叫醒以后，它读到那一批之前，再来新消息不重复叫。但如果 agent 换了进程（重开过）、或者过了 WAKE_RETRY
+   还没读，说明那次多半没送到，就从没读的地方再交一次（接收端按叫醒编号去重）。
 4. 没开着的 agent 不管；暂停期间和刚开始感知时的旧消息不补叫。
 """
 from __future__ import annotations
@@ -16,7 +17,7 @@ from datetime import datetime
 from typing import Callable
 
 from .. import db
-from ..config import WAKE_CHAIN_IDLE, WAKE_MAX_ROUNDS
+from ..config import WAKE_CHAIN_IDLE, WAKE_MAX_ROUNDS, WAKE_RETRY
 
 
 @dataclass
@@ -121,7 +122,7 @@ def scan(check: Callable[[dict], str | None]) -> list[WakeCall]:
             top = c.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
             names = {r["id"]: r["name"] for r in c.execute("SELECT id, name FROM agents")}
             agents = c.execute(
-                "SELECT a.*, w.agent_id AS w_id, w.enabled, w.seen_upto, w.woken_upto"
+                "SELECT a.*, w.agent_id AS w_id, w.enabled, w.seen_upto, w.woken_upto, w.woken_pid, w.woken_at"
                 " FROM agents a LEFT JOIN wake_state w ON w.agent_id = a.id"
                 " WHERE a.kind NOT IN ('human', 'remote')"
             ).fetchall()
@@ -130,7 +131,12 @@ def scan(check: Callable[[dict], str | None]) -> list[WakeCall]:
                     # 第一次见到：从现在开始算，以前的消息不补叫
                     c.execute("INSERT INTO wake_state(agent_id, seen_upto) VALUES(?, ?)", (a["id"], top))
                     continue
-                start = max(a["seen_upto"], a["last_read"])
+                unread = a["woken_upto"] > a["last_read"]  # 上次叫醒的那一批还没读
+                # 那次多半没送到：agent 换了进程（重开过），或者过了 WAKE_RETRY 还没读。
+                # 从没读的地方重新交一次；接收端按叫醒编号去重，真送到过的不会重复。
+                redo = unread and (a["woken_pid"] != a["pid"]
+                                   or time.time() - (a["woken_at"] or time.time()) >= WAKE_RETRY)
+                start = a["last_read"] if redo else max(a["seen_upto"], a["last_read"])
                 if start >= top:
                     continue
                 c.execute("UPDATE wake_state SET seen_upto=? WHERE agent_id=?", (top, a["id"]))
@@ -152,7 +158,7 @@ def scan(check: Callable[[dict], str | None]) -> list[WakeCall]:
                             else f"{who} 发来的没有叫醒（来回上限是 0：只有你发的消息才叫醒 agent）")
                     c.execute("UPDATE wake_state SET note=? WHERE agent_id=?", (note, a["id"]))
                     continue
-                if a["woken_upto"] > a["last_read"]:
+                if unread and not redo:
                     continue  # 上次叫醒的那一批还没读，不重复叫
                 why = check(dict(a))
                 if why:
@@ -162,7 +168,8 @@ def scan(check: Callable[[dict], str | None]) -> list[WakeCall]:
                 call = WakeCall(a["id"], a["name"], a["kind"], a["pid"], [r["id"] for r in ok], senders,
                                 prev_woken_upto=a["woken_upto"], thread_id=a["thread_id"])
                 call.text = wake_text(senders, len(ok))
-                c.execute("UPDATE wake_state SET woken_upto=? WHERE agent_id=?", (max(call.message_ids), a["id"]))
+                c.execute("UPDATE wake_state SET woken_upto=?, woken_pid=? WHERE agent_id=?",
+                          (max(call.message_ids), a["pid"], a["id"]))
                 calls.append(call)
             c.execute("COMMIT")
         except BaseException:

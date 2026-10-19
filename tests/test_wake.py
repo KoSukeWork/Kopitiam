@@ -730,3 +730,47 @@ def test_dsh_plugin_prompts_the_kopitiam_session(home):
     assert out["prompts"] == [{"requestId": "kopitiam-5-9", "sessionId": "s-1", "mode": "queue",
                                "content": [{"type": "text", "text": "kopitiam：你有 1 条新消息"}]}]
     assert out["warns"] == [] and out["removed"] is True
+
+
+# ---- 叫醒了但没送到：agent 重开过 / 太久没读，就再交一次 ----
+
+
+def _woke(calls):
+    return [(c.name, c.message_ids, c.wake_id) for c in calls]
+
+
+def test_rewake_after_agent_restarts(home):
+    old, new = (subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"]) for _ in range(2))
+    try:
+        db.init_db()
+        c = db.claim("dsh", cwd=str(home), name="C", pid=old.pid)
+        _scan()
+        m = _send(db.user_id(), "C")
+        first = _woke(_scan())
+        assert first == [("C", [m], f"{c}-{m}")]
+        assert _scan() == []  # 同一个进程、还没读：不重复叫
+        old.kill()
+        old.wait()
+        assert db.claim("dsh", cwd=str(home), name="C", pid=new.pid) == c  # C 重开了（旧的那次多半没送到）
+        assert _woke(_scan()) == first  # 没有新消息也再交一次；叫醒编号一样，接收端会去重
+        assert _scan() == []  # 交给新进程以后就不再重复
+    finally:
+        old.kill()
+        new.kill()
+
+
+def test_retry_when_unread_for_too_long(room):
+    from kopitiam.config import WAKE_RETRY
+
+    a, b, user = room
+    m = _send(user, "A")
+    calls = _scan()
+    detector.record(calls[0], None)
+    assert _scan() == []
+    with closing(db.connect()) as c:
+        c.execute("UPDATE wake_state SET woken_at=? WHERE agent_id=?", (time.time() - WAKE_RETRY - 1, a))
+    m2 = _send(user, "A")
+    assert _woke(_scan()) == [("A", [m, m2], f"{a}-{m2}")]  # 从没读的地方重新交（含新来的）
+    Chat().read(a)
+    m3 = _send(user, "A")
+    assert _woke(_scan()) == [("A", [m3], f"{a}-{m3}")]  # 读过以后照常
