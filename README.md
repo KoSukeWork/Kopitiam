@@ -25,6 +25,19 @@ uv tool install --editable <本项目目录>
 
 数据目录：`~/.kopitiam`（`chat.db` + `files/`）。可用环境变量 `KOPITIAM_HOME` 指到别处（测试时用）。
 
+## 更新
+
+```powershell
+uv tool upgrade kopitiam
+```
+
+从 GitHub 装的会拉 master 上最新的提交（装的时候指定了标签或提交的，要换新地址重新 `uv tool install`）。editable 安装的源码改动本来就立即生效，这条命令会按 `pyproject.toml` 补装新加的依赖。
+
+更新以后，**已经在跑的进程还是旧代码**，要重开才用上新的：
+1. **重启 `kopitiam web`**（或 `kopitiam wake`）：自动唤醒在它里面跑。不重启的话，新版本改过的唤醒方式会对不上（比如 dsh 的会话叫不醒）。
+2. **插件是复制过去的，要再装一次**：`kopitiam setup pi` 然后重开 pi；`kopitiam setup dsh` 然后重开 dsh。Claude Code 和 Codex 的 hook 直接调用 `kopitiam.exe`，不用重装。
+3. **各个 agent**：每个 agent 的 kopitiam MCP 进程是 agent 启动时开的，agent 重开以后才用新代码。没重开之前照常能收发消息，只是用不上新功能。数据库由新代码第一次打开时自动升级，旧进程也能接着用。
+
 ## 命令
 
 | 命令 | 作用 |
@@ -188,7 +201,7 @@ kopitiam setup dsh --remove        # 删掉
 
 它把插件复制到 `~/.dsh/profiles/<profile>/kopitiam-wake-<哈希>.mjs`（文件名带内容的哈希：dsh 用 `import()` 加载插件，同一个路径会一直用缓存里的旧版本，换了文件名才不会用到旧的），并在那个 profile 的 `cordis.patch.yml` 末尾加一段 `- insert:`（前后有 `# >>> kopitiam 自动唤醒` / `# <<< kopitiam 自动唤醒` 标记行，`--remove` 整段删掉，别的内容不动）。web profile 默认 `patchReload: live`，改完自动重新加载；别的 profile 要重开 dsh。然后每个会话先用一次 kopitiam（比如让它调用 `whoami`），就有了自己的身份。
 
-> 以前装过插件的，更新 kopitiam 以后要再运行一次 `kopitiam setup dsh`，然后**重开 dsh**：插件是复制过去的，不会自己更新；而且实测（dsh 0.2）热加载能换掉 MCP 的配置，换不掉已经加载的插件。
+> 以前装过插件的，更新 kopitiam 以后要再运行一次 `kopitiam setup dsh`，然后**重开 dsh**（见「更新」）：插件是复制过去的，不会自己更新；而且实测（dsh 0.2）热加载能换掉 MCP 的配置，换不掉已经加载的插件。
 
 原理：
 - **哪个会话在调用**：一个 dsh 进程管着好几个会话，却只有一个 kopitiam MCP 进程，而且 dsh 调用 MCP 工具时只发工具名和参数，不带会话信息（参数在插件能碰到之前就冻结了，也塞不进去）。所以插件包住每次 `mcp__kopitiam__*` 调用（`tools/execute` 事件）：调用前把会话 ID、工作目录、标题写进 `~/.kopitiam/wake/dsh-<dsh 进程号>.calling.json`，调用完删掉；kopitiam 收到请求时读它认人。kopitiam 的调用在插件里排队、一次一个，几个会话同时调用也不会认错（kopitiam 的工具都是几毫秒的事）。
