@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
+import subprocess
+import sys
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +25,10 @@ from .wake import service as wake_service
 from .wake.service import WakeService
 
 TEXT_SUFFIXES = {".md", ".txt", ".json", ".log"}
+# 附件来自 agent 和团队里的同事：这些类型用默认程序「打开」就是直接运行，只在文件夹里选中它，让用户自己决定
+RUNNABLE = {".exe", ".com", ".scr", ".pif", ".cpl", ".msi", ".msp", ".bat", ".cmd", ".ps1", ".psm1", ".vbs", ".vbe",
+            ".js", ".jse", ".wsf", ".wsh", ".hta", ".reg", ".lnk", ".url", ".jar", ".py", ".pyw", ".sh", ".msc",
+            ".inf", ".scf", ".appref-ms", ".application", ".gadget", ".settingcontent-ms"}
 SEND_BODY_MAX = 1024 * 1024
 
 
@@ -48,6 +55,21 @@ def _port_owner(port: int) -> str:
     except Exception:
         pass
     return ""
+
+
+def open_local(path: Path, folder: bool = False) -> None:
+    """在本机用默认程序打开文件；folder=True 时打开它所在的文件夹并选中它。"""
+    if sys.platform == "win32":
+        if folder:
+            # 要整行原样传：路径有空格时，列表参数会被引成 "/select,C:\..."，explorer 认不出来，打开的是「文档」。
+            # explorer 成功时退出码也是 1，不看它
+            subprocess.Popen(f'explorer /select,"{path}"')
+        else:
+            os.startfile(path)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", str(path)] if folder else ["open", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(path.parent if folder else path)])
 
 
 def make_server(port: int = WEB_PORT, *, peer_host: str = "0.0.0.0", peer_port: int = PEER_PORT,
@@ -199,7 +221,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._api_upload(parse_qs(u.query))
         if u.path == "/api/forget":
             return self._api_forget()
-        handler = self._TEAM_POSTS.get(u.path) or self._WAKE_POSTS.get(u.path) or self._AGENT_POSTS.get(u.path)
+        handler = (self._TEAM_POSTS.get(u.path) or self._WAKE_POSTS.get(u.path) or self._AGENT_POSTS.get(u.path)
+                   or self._FILE_POSTS.get(u.path))
         if handler:
             data = self._read_json()
             if data is None:
@@ -260,6 +283,27 @@ class _Handler(BaseHTTPRequestHandler):
         return {"message": out}
 
     _AGENT_POSTS = {"/api/archive": _a_archive, "/api/trash": _a_trash, "/api/purge": _a_purge}
+
+    # ---- 附件：在本机打开文件 / 文件夹（只限 FILES_DIR 里的附件） ----
+
+    def _f_open(self, data: dict) -> dict:
+        name = Path(str(data.get("name") or "")).name
+        root = files_dir().resolve()
+        path = (files_dir() / name).resolve()
+        if not name or not path.is_relative_to(root) or not path.is_file():
+            raise ValueError("找不到这个附件（可能已经删除了）")
+        folder = bool(data.get("folder"))
+        runnable = not folder and path.suffix.lower() in RUNNABLE
+        try:
+            open_local(path, folder or runnable)
+        except OSError as e:
+            raise ValueError(f"打不开：{e}") from e
+        if runnable:
+            return {"message": f"{path.suffix} 文件打开就会直接运行。为了安全，只在文件夹里选中了它，确认没问题再自己打开。",
+                    "revealed": True}
+        return {"message": "已打开文件夹" if folder else "已打开"}
+
+    _FILE_POSTS = {"/api/open": _f_open}
 
     # ---- 团队 ----
 
@@ -745,6 +789,8 @@ main.page > #convbar, main.page > #conn, main.page > #stream, main.page > #compo
 .msg .body { min-width:0; max-width:min(640px, 78%); display:flex; flex-direction:column; align-items:flex-start; }
 .meta { display:flex; align-items:baseline; flex-wrap:wrap; gap:6px; margin-bottom:5px; font-size:12px; color:var(--muted); }
 .meta .who { font-size:13px; font-weight:600; color:hsl(var(--h) 60% var(--name-l)); }
+.meta .who.copyable { cursor:pointer; }
+.meta .who.copyable:hover { text-decoration:underline; }
 .meta .id { opacity:.65; }
 .bubble {
   padding:10px 14px; border:1px solid var(--line); border-radius:6px 18px 18px 18px;
@@ -765,6 +811,16 @@ main.page > #convbar, main.page > #conn, main.page > #stream, main.page > #compo
 .file a:hover { color:var(--accent); text-decoration:underline; }
 .file .sz { font-size:11.5px; color:var(--muted); }
 .file .btn { flex-shrink:0; padding:4px 10px; font-size:12px; }
+/* 附件的分体按钮：左边「打开」，右边向下箭头弹出「打开文件夹」「复制路径」 */
+.split { position:relative; flex-shrink:0; display:inline-flex; }
+.split > .btn.main { border-radius:999px 0 0 999px; padding-right:9px; }
+.split > .btn.more { margin-left:-1px; border-radius:0 999px 999px 0; padding:4px 7px 4px 6px; }
+.fmenu { position:absolute; right:0; top:calc(100% + 6px); z-index:20; min-width:148px; padding:5px;
+  background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:0 16px 48px rgba(0,0,0,.28); animation:pop .14s ease-out; }
+.fmenu.up { top:auto; bottom:calc(100% + 6px); }
+.fmenu button { display:flex; align-items:center; gap:8px; width:100%; padding:7px 10px; border:0; border-radius:8px;
+  background:transparent; color:var(--ink); font-size:13px; text-align:left; white-space:nowrap; cursor:pointer; }
+.fmenu button:hover { background:var(--hover); }
 
 /* ---- 输入区：圆角浮动卡片，获得焦点时边框是流动的彩色光 ---- */
 #composer { flex-shrink:0; padding:10px 24px 20px; }
@@ -905,6 +961,9 @@ const ICONS = {
   chev: '<path d="M9.5 6l6 6-6 6"/>',
   back: '<path d="M14.5 6l-6 6 6 6"/>',
   restore: '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5v4h4"/>',
+  open: '<path d="M14 4.5h5.5V10"/><path d="M19.5 4.5L11 13"/><path d="M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/>',
+  folder: '<path d="M3.5 7A1.5 1.5 0 0 1 5 5.5h4.3l2 2.2H19a1.5 1.5 0 0 1 1.5 1.5V17A1.5 1.5 0 0 1 19 18.5H5A1.5 1.5 0 0 1 3.5 17z"/>',
+  down: '<path d="M7 10l5 5 5-5"/>',
   archive: '<rect x="3.5" y="4" width="17" height="4.5" rx="1.5"/><path d="M5.5 8.5V18a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8.5"/><path d="M10 12.5h4"/>',
   trash: '<path d="M4 7h16"/><path d="M9 7V4.5h6V7"/><path d="M6.5 7l1 12.5a1.5 1.5 0 0 0 1.5 1.5h6a1.5 1.5 0 0 0 1.5-1.5l1-12.5"/>',
   chat: '<path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.2A8 8 0 1 1 20 12z"/>',
@@ -1474,6 +1533,16 @@ function agentRow(a) {
   if (wb) av.append(wb);
   div.append(av, info);
   if (a.name !== "user") {
+    const copy = el("button", "act");
+    copy.append(icon("copy", 14));
+    copy.title = "复制名字";
+    copy.onclick = (e) => {
+      e.stopPropagation();  // 只复制，不切换对话
+      navigator.clipboard.writeText(a.name).then(() => {
+        copy.replaceChildren(icon("check", 14));
+        setTimeout(() => copy.replaceChildren(icon("copy", 14)), 1200);
+      });
+    };
     const add = el("button", "act add");
     add.append(icon("plus", 15));
     add.title = "加到「发给」（可以同时发给多个）";
@@ -1484,7 +1553,7 @@ function agentRow(a) {
       $("to").value = cur.join(", ");
     };
     const ops = el("div", "ops");
-    ops.append(add);
+    ops.append(copy, add);
     if (a.kind !== "remote") {
       const arch = el("button", "act arch");
       arch.append(icon("archive", 14));
@@ -1579,6 +1648,14 @@ function addMessage(m, backfill) {
     const meta = el("div", "meta");
     const who = el("span", "who", shown(m.sender));
     who.style.setProperty("--h", hue(m.sender));
+    if (!mine) {  // 点发送者的名字 = 复制，和别的 agent 说起它时直接粘贴
+      who.classList.add("copyable");
+      who.title = "点击复制名字";
+      who.onclick = () => navigator.clipboard.writeText(m.sender).then(() => {
+        who.textContent = "已复制";
+        setTimeout(() => { who.textContent = shown(m.sender); }, 1200);
+      });
+    }
     const fwd = el("button", "fwdbtn");
     fwd.append(icon("fwd", 14));
     fwd.title = "转发给 agent 或同事";
@@ -1595,14 +1672,7 @@ function addMessage(m, backfill) {
         const a = el("a", "", f.name);
         a.href = f.url; a.target = "_blank"; a.title = f.path;
         fn.append(a, el("div", "sz", fmtSize(f.size)));
-        const btn = el("button", "btn");
-        const label = el("span", "", "复制路径");
-        btn.append(icon("copy", 14), label);
-        btn.onclick = () => navigator.clipboard.writeText(f.path).then(() => {
-          btn.replaceChildren(icon("check", 14), el("span", "", "已复制"));
-          setTimeout(() => btn.replaceChildren(icon("copy", 14), label), 1200);
-        });
-        card.append(icon("file", 18), fn, btn);
+        card.append(icon("file", 18), fn, fileActions(f));
         files.append(card);
       }
       body.append(files);
@@ -1655,6 +1725,62 @@ async function poll() {
   updateEmpty();
   if ((st.messages || []).length && atBottom) s.scrollTop = s.scrollHeight;
   booted = true;
+}
+
+// ---- 附件：打开（默认）/ 打开文件夹 / 复制路径 ----
+let fileMenu = null;  // 当前弹出的附件菜单（同一时间只开一个）
+
+function closeFileMenu() { if (fileMenu) { fileMenu.remove(); fileMenu = null; } }
+
+// 按钮上短暂显示结果（「已打开」「已复制」），然后恢复原样。
+// 原样只记第一次的：连着点两下时，第二次记到的是第一次的提示，恢复成它就卡住了
+function flash(btn, iconName, text) {
+  if (!btn._orig) btn._orig = [...btn.childNodes];
+  clearTimeout(btn._flashT);
+  btn.replaceChildren(icon(iconName, 14), el("span", "", text));
+  btn._flashT = setTimeout(() => btn.replaceChildren(...btn._orig), 1200);
+}
+
+async function openFile(f, folder, btn) {
+  const name = decodeURIComponent(f.url.split("?")[0].split("/").pop());  // 附件目录里的文件名
+  const out = await api("/api/open", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, folder }) });
+  if (!out.ok) { alert(out.message || "打不开"); return; }
+  if (out.revealed) alert(out.message);  // 可执行文件：只在文件夹里选中了它
+  else if (btn) flash(btn, "check", out.message);
+}
+
+function fileActions(f) {
+  const box = el("div", "split");
+  const main = el("button", "btn main");
+  main.append(icon("open", 14), el("span", "", "打开"));
+  main.title = "用默认程序打开（" + f.path + "）";
+  main.onclick = () => openFile(f, false, main);
+  const more = el("button", "btn more");
+  more.append(icon("down", 14));
+  more.title = "更多";
+  more.setAttribute("aria-label", "更多");
+  more.onclick = (e) => {
+    e.stopPropagation();
+    const wasOpen = fileMenu && fileMenu.parentNode === box;
+    closeFileMenu();
+    if (wasOpen) return;
+    const menu = el("div", "fmenu");
+    const folder = el("button");
+    folder.append(icon("folder", 14), el("span", "", "打开文件夹"));
+    folder.onclick = () => { closeFileMenu(); openFile(f, true, main); };
+    const copy = el("button");
+    copy.append(icon("copy", 14), el("span", "", "复制路径"));
+    copy.onclick = () => navigator.clipboard.writeText(f.path).then(() => { closeFileMenu(); flash(main, "check", "已复制路径"); });
+    menu.append(folder, copy);
+    // 靠近消息区底部时向上弹，免得被输入框挡住
+    const r = box.getBoundingClientRect(), s = $("stream").getBoundingClientRect();
+    if (s.bottom - r.bottom < 110) menu.classList.add("up");
+    box.append(menu);
+    fileMenu = menu;
+  };
+  box.append(main, more);
+  return box;
 }
 
 function renderChips() {
@@ -1752,10 +1878,14 @@ for (const m of document.querySelectorAll("[data-logo]")) m.innerHTML = svg(LOGO
 
 renderThemes();
 $("themeBtn").onclick = (e) => { e.stopPropagation(); $("themePop").hidden = !$("themePop").hidden; };
-document.addEventListener("click", (e) => { if (!$("themePop").contains(e.target)) $("themePop").hidden = true; });
+document.addEventListener("click", (e) => {
+  if (!$("themePop").contains(e.target)) $("themePop").hidden = true;
+  if (fileMenu && !fileMenu.contains(e.target)) closeFileMenu();
+});
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if (!$("modal").hidden) closeModal();
+  if (fileMenu) closeFileMenu();
+  else if (!$("modal").hidden) closeModal();
   else if (!$("themePop").hidden) $("themePop").hidden = true;
   else if (!$("hiddenPage").hidden) closeHidden();
 });

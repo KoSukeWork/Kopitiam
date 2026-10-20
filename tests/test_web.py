@@ -266,3 +266,26 @@ def test_trash_and_purge_endpoints(server):
     assert "noisy" not in {x["name"] for x in json.loads(_get(base + "/api/hidden", headers=h)[1])["agents"]}
     assert not post("/api/purge", {"name": "user"})["ok"]
     assert _post(base + "/api/trash", b"{}")[0] == 403  # 要 token
+
+
+def test_open_attachment_endpoint(server, monkeypatch):
+    srv, token, url = server
+    base, h = _base(srv), {"X-Token": token}
+    opened = []
+    monkeypatch.setattr(web, "open_local", lambda path, folder=False: opened.append((path.name, folder)))
+    config.files_dir().mkdir(parents=True, exist_ok=True)
+    (config.files_dir() / "000001_0_plan.md").write_text("计划", encoding="utf-8")
+    (config.files_dir() / "000002_0_run.bat").write_text("echo hi", encoding="utf-8")
+
+    def post(body, headers=h):
+        code, raw = _post(base + "/api/open", json.dumps(body).encode("utf-8"), headers)
+        return code, (json.loads(raw) if code == 200 else None)
+
+    assert post({"name": "000001_0_plan.md"}, {})[0] == 403  # 要 token
+    assert post({"name": "000001_0_plan.md"})[1] == {"ok": True, "message": "已打开"}
+    assert post({"name": "000001_0_plan.md", "folder": True})[1]["message"] == "已打开文件夹"
+    out = post({"name": "000002_0_run.bat"})[1]  # 打开就会直接运行的：只在文件夹里选中
+    assert out["ok"] and out["revealed"] and "为了安全" in out["message"]
+    for bad in ("../chat.db", "..", "", "nope.md"):  # 只能打开附件目录里的文件
+        assert post({"name": bad})[1]["ok"] is False
+    assert opened == [("000001_0_plan.md", False), ("000001_0_plan.md", True), ("000002_0_run.bat", True)]
