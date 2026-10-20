@@ -79,6 +79,7 @@ def cleanup() -> None:
             pid = f.name[len("dsh-"):].partition(".")[0]
             if pid.isdigit() and not psutil.pid_exists(int(pid)):
                 f.unlink(missing_ok=True)
+        (d / "dsh-session.txt").unlink(missing_ok=True)  # 以前的 dsh 插件记的会话，现在不用了
         for f in (d / "taken").glob("*"):
             if time.time() - f.stat().st_mtime > TAKEN_MAX_AGE:
                 f.unlink(missing_ok=True)

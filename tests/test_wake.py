@@ -390,11 +390,13 @@ def test_signals_cleanup_handles_every_kind(home):
     proc.wait()
     wake_dir().mkdir(parents=True)
     dead = [signals.path(k, proc.pid) for k in ("claude", "pi")]
-    alive = signals.path("pi", os.getpid())
-    for f in dead + [alive]:
+    dead += [wake_dir() / f"dsh-{proc.pid}.calling.json", wake_dir() / f"dsh-{proc.pid}.wake-1-2.json",
+             wake_dir() / "dsh-session.txt"]  # 最后一个是以前的 dsh 插件留下的
+    alive = [signals.path("pi", os.getpid()), wake_dir() / f"dsh-{os.getpid()}.wake-1-3.json"]
+    for f in dead + alive:
         f.write_text("", encoding="utf-8")
     signals.cleanup()
-    assert not any(f.exists() for f in dead) and alive.exists()
+    assert not any(f.exists() for f in dead) and all(f.exists() for f in alive)
 
 
 # ---- Codex：记下对话 ID、Stop hook 接力、daemon 托管时用 codex queue ----
