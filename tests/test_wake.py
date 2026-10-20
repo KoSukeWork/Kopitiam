@@ -1099,3 +1099,32 @@ def test_retry_when_unread_for_too_long(room):
     Chat().read(a)
     m3 = _send(user, "A")
     assert _woke(_scan()) == [("A", [m3], f"{a}-{m3}")]  # 读过以后照常
+
+
+# ---- 手动归档 ----
+
+
+def test_archived_agent_is_hidden_and_not_woken_until_it_comes_back(home):
+    db.init_db()
+    me = db.claim("claude", cwd=str(home), name="me", pid=os.getpid())
+    c = db.claim_thread("codex", "t-1", str(home / "Client"), pid=os.getpid(), host="codex-desktop")
+    _scan()
+    assert Chat().archive("codex@Client") == "已归档 codex@Client"
+    assert "codex@Client" not in Chat().who()  # 不在 who 里列出
+    out = Chat().send(me, "在吗", ["codex@Client"])
+    assert "已归档：消息会保存，但不会叫醒它" in out  # 照常保存，告诉发送者一声
+    assert _woken(_scan()) == {}  # 不叫醒
+
+    db.release(c)  # 桌面版关了又重开：归档的不接上
+    assert db.adopt("codex", "codex-desktop", os.getpid()) == 0
+
+    # 那个对话自己又用 kopitiam 了：自动回到列表，之后的消息照常叫醒
+    assert db.claim_thread("codex", "t-1", str(home / "Client"), pid=os.getpid(), host="codex-desktop") == c
+    assert "codex@Client" in Chat().who()
+    _send(me, "codex@Client", "现在呢")
+    assert list(_woken(_scan())) == ["codex@Client"]
+
+    Chat().archive("codex@Client")
+    Chat().whoami(c)  # 调用任何工具都算在用
+    assert "codex@Client" in Chat().who()
+    assert Chat().archive("user").startswith("错误：")

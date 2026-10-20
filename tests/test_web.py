@@ -216,3 +216,30 @@ def test_port_in_use_gives_a_clear_error(home):
         assert "被占用" in str(e.value) and "--port" in str(e.value)
     finally:
         busy.close()
+
+
+def test_archive_endpoint_moves_agent_to_hidden_and_back(server):
+    import os
+
+    from kopitiam import db
+
+    srv, token, url = server
+    base, h = _base(srv), {"X-Token": token}
+    db.claim("codex", cwd=".", name="busy", pid=os.getpid())  # 在线的也能归档（桌面版的对话身份一直在线）
+
+    def state():
+        brief = {a["name"]: a for a in json.loads(_get(base + "/api/state", headers=h)[1])["agents"]}
+        hidden = [a["name"] for a in json.loads(_get(base + "/api/hidden", headers=h)[1])["agents"]]
+        return brief["busy"], hidden
+
+    assert _post(base + "/api/archive", json.dumps({"name": "busy"}).encode("utf-8"))[0] == 403  # 要 token
+    out = json.loads(_post(base + "/api/archive", json.dumps({"name": "busy", "archived": True}).encode("utf-8"), h)[1])
+    assert out["ok"] and out["message"] == "已归档 busy"
+    a, hidden = state()
+    assert a["archived"] and a["hidden"] and a["online"] and hidden == ["busy"]
+    out = json.loads(_post(base + "/api/archive", json.dumps({"name": "busy", "archived": False}).encode("utf-8"), h)[1])
+    assert out["ok"]
+    a, hidden = state()
+    assert not a["archived"] and not a["hidden"] and hidden == []
+    out = json.loads(_post(base + "/api/archive", json.dumps({"name": "user"}).encode("utf-8"), h)[1])
+    assert not out["ok"]  # 用户身份不能归档

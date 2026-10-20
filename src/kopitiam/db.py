@@ -37,7 +37,7 @@ from .config import (
     valid_name,
 )
 
-SCHEMA_VERSION = "6"  # 2：团队（peers / outbox / messages.remote_uid）；3：自动唤醒（wake_state）；4：agents.thread_id；5：wake_state.woken_pid；6：agents.host
+SCHEMA_VERSION = "7"  # 2：团队（peers / outbox / messages.remote_uid）；3：自动唤醒（wake_state）；4：agents.thread_id；5：wake_state.woken_pid；6：agents.host；7：agents.archived_at
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS wake_state(
 #   "codex-desktop" = 桌面版。桌面版开着，没加载的对话也叫得醒，所以它重开以后要把这些对话的身份重新接上（adopt）。
 #   "codex-daemon" = 命令行用的共享 daemon。关了窗口它还会把对话留很久，所以 pid 记的是用户开着的命令行窗口
 #   （找不到窗口时记那个对话自己的 MCP 进程）。
+# agents.archived_at：用户在网页上手动归档的时间（空 = 没归档）。归档的身份收进「已归档 / 隐藏」子页面，
+#   不在 who 里列出、不叫醒、桌面版重开时不接上；消息照常保存。它自己再用 kopitiam（认领身份、调用工具）就自动恢复。
 # wake_state：自动唤醒的进度（只有感知模块读写，见 wake/detector.py）。seen_upto = 这个 id 及以前的消息
 #   已经判断过要不要叫醒；woken_upto = 最近一次叫醒时包含的最大消息 id（agent 读到这里之前不重复叫）；
 #   woken_pid = 那次叫醒交给的 agent 进程（agent 换了进程，说明那次多半没送到，可以再叫）；
@@ -142,9 +144,10 @@ def init_db() -> None:
         c.execute("BEGIN IMMEDIATE")
         try:
             # v1 → v2：messages 加 remote_uid 列；v3 → v4：agents 加 thread_id 列；v4 → v5：wake_state 加 woken_pid 列；
-            # v5 → v6：agents 加 host 列（几个进程可能同时启动，重复加列的错误忽略）
+            # v5 → v6：agents 加 host 列；v6 → v7：agents 加 archived_at 列（几个进程可能同时启动，重复加列的错误忽略）
             for table, col, typ in (("messages", "remote_uid", "TEXT"), ("agents", "thread_id", "TEXT"),
-                                    ("wake_state", "woken_pid", "INTEGER"), ("agents", "host", "TEXT")):
+                                    ("wake_state", "woken_pid", "INTEGER"), ("agents", "host", "TEXT"),
+                                    ("agents", "archived_at", "TEXT")):
                 if col not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
                     try:
                         c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
@@ -334,7 +337,7 @@ def claim(kind: str, cwd: str | None = None, *, name: str | None = None,
                 if row is not None and _usable(row, pid):
                     # 认领这一行：写 pid、pid_ctime、last_seen，kind 也更新
                     c.execute(
-                        "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, kind=? WHERE id=?",
+                        "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, kind=?, archived_at=NULL WHERE id=?",
                         (pid, pid_ctime, now_iso(), kind, row["id"]),
                     )
                     _drop_spare_names(c, name, row["id"])
@@ -350,7 +353,7 @@ def claim(kind: str, cwd: str | None = None, *, name: str | None = None,
                             break
                         if _usable(alt, pid):
                             c.execute(
-                                "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, kind=? WHERE id=?",
+                                "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, kind=?, archived_at=NULL WHERE id=?",
                                 (pid, pid_ctime, now_iso(), kind, alt["id"]),
                             )
                             c.execute("COMMIT")
@@ -370,7 +373,7 @@ def claim(kind: str, cwd: str | None = None, *, name: str | None = None,
             for cand in sorted(candidates, key=lambda r: not _same_host(r, pid)):  # 同一个 agent 的优先
                 if norm(cand["launch_cwd"]) == norm(cwd) and _usable(cand, pid):
                     c.execute(
-                        "UPDATE agents SET pid=?, pid_ctime=?, last_seen=? WHERE id=?",
+                        "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, archived_at=NULL WHERE id=?",
                         (pid, pid_ctime, now_iso(), cand["id"]),
                     )
                     c.execute("COMMIT")
@@ -454,7 +457,7 @@ def claim_thread(kind: str, thread_id: str, cwd: str, *, pid: int | None = None,
                             (kind, thread_id)).fetchone()
             if row is not None:
                 # 工作目录跟着对话（以前共用一个身份时记的是别的对话的目录）
-                c.execute("UPDATE agents SET cwd=?, pid=?, pid_ctime=?, last_seen=?, host=? WHERE id=?",
+                c.execute("UPDATE agents SET cwd=?, pid=?, pid_ctime=?, last_seen=?, host=?, archived_at=NULL WHERE id=?",
                           (cwd, pid, pid_ctime, now_iso(), host, row["id"]))
                 c.execute("COMMIT")
                 return int(row["id"])
@@ -467,7 +470,7 @@ def claim_thread(kind: str, thread_id: str, cwd: str, *, pid: int | None = None,
                 if old is not None and old["kind"] == kind and old["thread_id"] is None and not is_online(old):
                     if counts.get(old["id"]):
                         c.execute(
-                            "UPDATE agents SET thread_id=?, cwd=?, pid=?, pid_ctime=?, last_seen=?, host=?"
+                            "UPDATE agents SET thread_id=?, cwd=?, pid=?, pid_ctime=?, last_seen=?, host=?, archived_at=NULL"
                             " WHERE id=?", (thread_id, cwd, pid, pid_ctime, now_iso(), host, old["id"]))
                         c.execute("COMMIT")
                         return int(old["id"])
@@ -489,7 +492,7 @@ def adopt(kind: str, host: str, pid: int | None = None) -> int:
 
     Codex 桌面版重开以后，对话要等加载了、再调用一次 kopitiam 才会重新认领身份；可桌面版开着，
     没加载的对话也叫得醒。所以桌面版一启动 MCP 进程，就先把 WHO_WINDOW 内用过的对话身份标成在线
-    （只改 pid，不算活动，不改 last_seen）。
+    （只改 pid，不算活动，不改 last_seen）。用户归档了的不接。
     """
     if pid is None:
         pid = host_pid()
@@ -500,7 +503,7 @@ def adopt(kind: str, host: str, pid: int | None = None) -> int:
         c.execute("BEGIN IMMEDIATE")
         try:
             for r in c.execute("SELECT * FROM agents WHERE kind=? AND host=? AND thread_id IS NOT NULL"
-                               " AND last_seen >= ?", (kind, host, cutoff)).fetchall():
+                               " AND last_seen >= ? AND archived_at IS NULL", (kind, host, cutoff)).fetchall():
                 if not is_online(r):
                     c.execute("UPDATE agents SET pid=?, pid_ctime=? WHERE id=?", (pid, pid_ctime, r["id"]))
                     n += 1
@@ -525,12 +528,14 @@ def _ago_cutoff(seconds: int) -> str:
 
 
 def _is_hidden(row, cutoff: str, peer_agents: set[int] = frozenset()) -> bool:
-    """离线超过 WHO_WINDOW 的 agent：不在 who / 网页主列表里显示（用户永远显示）。
+    """离线超过 WHO_WINDOW 的 agent、用户手动归档的：不在 who / 网页主列表里显示（用户永远显示）。
 
     团队里的人（kind=remote）：还在配对就不隐藏；解除配对以后马上隐藏。
     """
     if row["kind"] == "human":
         return False
+    if row["archived_at"]:
+        return True
     if row["kind"] == "remote":
         return row["id"] not in peer_agents
     return row["last_seen"] < cutoff and not is_online(row)
@@ -820,7 +825,8 @@ class Chat:
 
     @staticmethod
     def _touch(c, me: int) -> None:
-        c.execute("UPDATE agents SET last_seen=? WHERE id=?", (now_iso(), me))
+        # 自己又在用 kopitiam 了：归档的自动恢复
+        c.execute("UPDATE agents SET last_seen=?, archived_at=NULL WHERE id=?", (now_iso(), me))
 
     @staticmethod
     def _targets(to_ids_json: str) -> list[int]:
@@ -903,13 +909,14 @@ class Chat:
                 to = to or []
                 to_ids: list[int] = []
                 remote_peers: list[int] = []  # 收件人里别人电脑上的人 → 进发件箱，由网页进程投递
+                archived: list[str] = []  # 收件人里已归档的（照常保存，只是不叫醒；告诉发送者一声）
                 broadcast = any(t.strip().lower() == "all" or t.strip() == "所有人" for t in to)
                 if not broadcast:
                     for t in to:
                         t = t.strip()
                         if not t:
                             continue
-                        row = c.execute("SELECT id, name, kind FROM agents WHERE name=?", (t,)).fetchone()
+                        row = c.execute("SELECT id, name, kind, archived_at FROM agents WHERE name=?", (t,)).fetchone()
                         if row is None:
                             raise _Fail(
                                 f'错误：找不到 "{t}"。现有：{_all_names(c)}'
@@ -927,6 +934,8 @@ class Chat:
                             remote_peers.append(int(peer["id"]))
                         if row["id"] not in to_ids:
                             to_ids.append(int(row["id"]))
+                            if row["archived_at"]:
+                                archived.append(row["name"])
 
                 # 6. 正文长度（放在写库之前，任何失败都不能有半截数据）
                 text = text or ""
@@ -1010,6 +1019,8 @@ class Chat:
             out += f"（附件 {len(atts)} 个）"
         if remote_peers:
             out += "（发往别的电脑的部分会在后台投递）"
+        if archived:
+            out += f"（{'、'.join(archived)} 已归档：消息会保存，但不会叫醒它）"
         return out
 
     # ---- 转发（网页用）：把一条消息转给别人，标明原发送者和来源 ----
@@ -1221,13 +1232,14 @@ class Chat:
                 "title": titles.get(r["id"]),  # Codex：对应的对话标题
                 "online": online,
                 "last_seen": r["last_seen"],
-                "hidden": not online and _is_hidden(r, cutoff, set(peers)),
+                "archived": bool(r["archived_at"]),
+                "hidden": bool(r["archived_at"]) or (not online and _is_hidden(r, cutoff, set(peers))),
                 "peer_name": peer["name"] if peer is not None else None,
             })
         return out
 
     def hidden_agents(self) -> list[dict]:
-        """「已隐藏」子页面：离线超过 7 天的身份，最近出现的排前面，带关联消息数。"""
+        """「已归档 / 隐藏」子页面：手动归档的、离线超过 7 天的身份，最近出现的排前面，带关联消息数。"""
         cutoff = _ago_cutoff(WHO_WINDOW)
         with _conn() as c:
             rows = c.execute(
@@ -1235,16 +1247,21 @@ class Chat:
             ).fetchall()
             counts = _message_counts(c)
             paired = _peer_agent_ids(c)
+        rows = [r for r in rows if _is_hidden(r, cutoff, paired)]
+        titles = _titles(rows)
         return [
             {
                 "name": r["name"],
                 "kind": r["kind"],
                 "cwd": r["cwd"],
+                "title": titles.get(r["id"]),
                 "last_seen": r["last_seen"],
                 "ago": _ago(r["last_seen"]),
                 "messages": counts.get(r["id"], 0),
+                "archived_at": r["archived_at"],
+                "online": r["kind"] != "remote" and is_online(r),
             }
-            for r in rows if _is_hidden(r, cutoff, paired)
+            for r in rows
         ]
 
     def forget(self, name: str) -> str:
@@ -1273,6 +1290,17 @@ class Chat:
                 c.execute("ROLLBACK")
                 raise
         return f"已删除 {row['name']}"
+
+    def archive(self, name: str, value: bool = True) -> str:
+        """网页手动归档 / 恢复一个 agent（见 agents.archived_at）。在线的也能归档。"""
+        with _conn() as c:
+            row = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
+            if row is None:
+                return f'错误：找不到 "{name}"'
+            if row["kind"] in ("human", "remote"):
+                return "错误：只能归档 agent（团队里的同事请解除配对）"
+            c.execute("UPDATE agents SET archived_at=? WHERE id=?", (now_iso() if value else None, row["id"]))
+        return f"已归档 {row['name']}" if value else f"已恢复 {row['name']}"
 
     def messages_after(self, after: int, limit: int = 200) -> list[dict]:
         """user 能看到所有消息（包括 agent 之间互发的）。"""

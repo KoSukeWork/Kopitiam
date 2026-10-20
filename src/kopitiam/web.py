@@ -199,7 +199,7 @@ class _Handler(BaseHTTPRequestHandler):
             return self._api_upload(parse_qs(u.query))
         if u.path == "/api/forget":
             return self._api_forget()
-        handler = self._TEAM_POSTS.get(u.path) or self._WAKE_POSTS.get(u.path)
+        handler = self._TEAM_POSTS.get(u.path) or self._WAKE_POSTS.get(u.path) or self._AGENT_POSTS.get(u.path)
         if handler:
             data = self._read_json()
             if data is None:
@@ -238,6 +238,16 @@ class _Handler(BaseHTTPRequestHandler):
         "/api/wake/rounds": _w_rounds,
         "/api/wake/agent": _w_agent,
     }
+
+    # ---- 归档：手动把 agent 收进「已归档 / 隐藏」，或者放回列表 ----
+
+    def _a_archive(self, data: dict) -> dict:
+        out = Chat().archive(str(data.get("name") or ""), bool(data.get("archived", True)))
+        if out.startswith("错误："):
+            raise ValueError(out[len("错误："):])
+        return {"message": out}
+
+    _AGENT_POSTS = {"/api/archive": _a_archive}
 
     # ---- 团队 ----
 
@@ -581,14 +591,16 @@ details.offline > summary:hover { color:var(--ink-2); }
 .agent:hover .wk, .agent.active .wk { background:var(--hover); box-shadow:0 0 0 1.5px var(--hover); }
 .agent.active .wk { background:var(--panel); box-shadow:0 0 0 1.5px var(--panel); }
 .agent .cwd { margin-top:1px; font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.agent .add {
-  flex-shrink:0; width:28px; height:28px; display:grid; place-items:center; cursor:pointer;
+/* 成员行右边的按钮（加到「发给」、归档）：能悬停的设备上平时不占宽度，名字能完整显示 */
+.agent .ops { flex-shrink:0; display:flex; gap:4px; }
+.agent .act {
+  width:28px; height:28px; display:grid; place-items:center; cursor:pointer;
   border:1px solid var(--line); border-radius:9px; background:var(--panel); color:var(--ink-2); transition:color .15s, border-color .15s;
 }
-.agent .add:hover { color:var(--accent); border-color:var(--accent); }
+.agent .act:hover { color:var(--accent); border-color:var(--accent); }
 @media (hover:hover) {
-  .agent .add { opacity:0; }
-  .agent:hover .add, .agent .add:focus-visible { opacity:1; }
+  .agent .ops { width:0; margin-left:-11px; overflow:hidden; opacity:0; }
+  .agent:hover .ops, .agent .ops:focus-within { width:auto; margin-left:0; opacity:1; }
 }
 
 /* 主题：默认收起，只留一个按钮，点开才弹出 */
@@ -838,7 +850,7 @@ main.page > #convbar, main.page > #conn, main.page > #stream, main.page > #compo
   <section id="hiddenPage" hidden>
     <div class="pagebar">
       <button id="hiddenBack" class="btn"><span data-icon="back"></span>返回</button>
-      <div class="titles"><div class="ptitle">已隐藏的 agent</div><div class="psub">离线超过 7 天的收在这里；超过 30 天、又没有任何消息的会自动清理</div></div>
+      <div class="titles"><div class="ptitle">已归档 / 隐藏的 agent</div><div class="psub">你归档的、离线超过 7 天的都收在这里。归档的不会被叫醒，它自己再用 kopitiam 就会回到列表；超过 30 天没出现、又没有任何消息的会自动清理</div></div>
     </div>
     <div id="hiddenList"></div>
   </section>
@@ -877,6 +889,7 @@ const ICONS = {
   x: '<path d="M7 7l10 10"/><path d="M17 7L7 17"/>',
   chev: '<path d="M9.5 6l6 6-6 6"/>',
   back: '<path d="M14.5 6l-6 6 6 6"/>',
+  restore: '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5v4h4"/>',
   archive: '<rect x="3.5" y="4" width="17" height="4.5" rx="1.5"/><path d="M5.5 8.5V18a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8.5"/><path d="M10 12.5h4"/>',
   trash: '<path d="M4 7h16"/><path d="M9 7V4.5h6V7"/><path d="M6.5 7l1 12.5a1.5 1.5 0 0 0 1.5 1.5h6a1.5 1.5 0 0 0 1.5-1.5l1-12.5"/>',
   chat: '<path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.2A8 8 0 1 1 20 12z"/>',
@@ -1282,7 +1295,7 @@ function renderAgents(agents) {
   const j = JSON.stringify(agents) + "|" + selected + "|" + JSON.stringify(wakeInfo);
   if (j === agentJson) return;
   agentJson = j;
-  const shownAgents = agents.filter(a => !a.hidden);  // 离线超过 7 天的收进「已隐藏」子页面
+  const shownAgents = agents.filter(a => !a.hidden);  // 归档的、离线超过 7 天的收进「已归档 / 隐藏」子页面
   const hiddenN = agents.length - shownAgents.length;
   const team = shownAgents.filter(a => a.kind === "remote").sort((x, y) => y.online - x.online);
   const local = shownAgents.filter(a => a.kind !== "remote");
@@ -1321,14 +1334,24 @@ function renderAgents(agents) {
   }
   if (hiddenN) {
     const link = el("button", "hidden-link");
-    link.append(icon("archive", 14), el("span", "grow", "已隐藏 · " + hiddenN), icon("chev", 12));
+    link.append(icon("archive", 14), el("span", "grow", "已归档 / 隐藏 · " + hiddenN), icon("chev", 12));
     link.onclick = openHidden;
     box.append(link);
   }
   if (selected) updateConvbar();
 }
 
-// ---- 「已隐藏」子页面 ----
+// ---- 「已归档 / 隐藏」子页面 ----
+async function setArchived(name, value) {
+  const out = await api("/api/archive", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, archived: value }),
+  });
+  if (!out.ok) { alert(out.message || "操作失败"); return; }
+  agentJson = "";
+  if (!$("hiddenPage").hidden) await loadHidden();
+  poll();
+}
+
 async function openHidden() {
   closeSide();
   $("main").classList.add("page");
@@ -1346,7 +1369,7 @@ async function loadHidden() {
   const list = $("hiddenList");
   list.textContent = "";
   const agents = r.agents || [];
-  if (!agents.length) { list.append(el("div", "hempty", "没有隐藏的 agent")); return; }
+  if (!agents.length) { list.append(el("div", "hempty", "没有归档或隐藏的 agent")); return; }
   for (const a of agents) list.append(hiddenCard(a));
 }
 
@@ -1355,16 +1378,26 @@ function hiddenCard(a) {
   const info = el("div", "info");
   const line1 = el("div", "line1");
   line1.append(el("span", "name", a.name), el("span", "kind", a.kind));
-  info.append(line1, el("div", "cwd", a.cwd),
-    el("div", "hmeta", "最后出现 " + fmtTime(a.last_seen) + " · " + a.ago + " · " +
+  if (a.archived_at) line1.append(el("span", "kind", "已归档"));
+  info.append(line1, el("div", "cwd", a.title ? a.title + " · " + a.cwd : a.cwd),
+    el("div", "hmeta", (a.archived_at ? "归档于 " + fmtTime(a.archived_at) + " · " : "") +
+      (a.online ? "在线" : "最后出现 " + fmtTime(a.last_seen) + " · " + a.ago) + " · " +
       (a.messages ? a.messages + " 条相关消息" : "没有消息")));
   const acts = el("div", "acts");
   const view = el("button", "btn");
   view.append(icon("chat", 14), el("span", "", "查看对话"));
   view.onclick = () => select(a.name);
   acts.append(view);
-  if (a.messages) {
-    acts.append(el("span", "keep", "有消息，只隐藏"));  // 删了历史消息就没有发送者名字了
+  if (a.archived_at) {
+    const back = el("button", "btn");
+    back.append(icon("restore", 14), el("span", "", "恢复"));
+    back.title = "放回成员列表，恢复自动唤醒";
+    back.onclick = () => setArchived(a.name, false);
+    acts.append(back);
+  }
+  if (a.messages || a.online) {
+    // 删了历史消息就没有发送者名字了；在线的还在用这个身份
+    if (!a.archived_at) acts.append(el("span", "keep", "有消息，只隐藏"));
   } else {
     const del = el("button", "btn danger");
     del.append(icon("trash", 14), el("span", "", "删除"));
@@ -1403,7 +1436,7 @@ function agentRow(a) {
   if (wb) av.append(wb);
   div.append(av, info);
   if (a.name !== "user") {
-    const add = el("button", "add");
+    const add = el("button", "act add");
     add.append(icon("plus", 15));
     add.title = "加到「发给」（可以同时发给多个）";
     add.onclick = (e) => {
@@ -1412,7 +1445,16 @@ function agentRow(a) {
       if (!cur.includes(a.name)) cur.push(a.name);
       $("to").value = cur.join(", ");
     };
-    div.append(add);
+    const ops = el("div", "ops");
+    ops.append(add);
+    if (a.kind !== "remote") {
+      const arch = el("button", "act arch");
+      arch.append(icon("archive", 14));
+      arch.title = "归档：收进「已归档 / 隐藏」，不再叫醒它（它自己再用 kopitiam 会自动回来）";
+      arch.onclick = (e) => { e.stopPropagation(); setArchived(a.name, true); };
+      ops.append(arch);
+    }
+    div.append(ops);
   }
   // 点 agent / 同事 = 和它对话；点 user = 我的消息（在那里发送 = 发给自己）；再点一次回到全部消息
   div.onclick = () => select(a.name === selected ? null : a.name);

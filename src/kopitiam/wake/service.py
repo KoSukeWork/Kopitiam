@@ -51,8 +51,8 @@ def overview() -> dict:
         rows = c.execute("SELECT * FROM agents WHERE kind NOT IN ('human', 'remote') ORDER BY id").fetchall()
     agents = {}
     for r in rows:
-        if not db.is_online(r):
-            continue  # 没开着的不会被叫醒，也不用显示
+        if not db.is_online(r) or r["archived_at"]:
+            continue  # 没开着的、归档了的不会被叫醒，也不用显示
         s = st.get(r["id"], {})
         note, reason = s.get("note", ""), check(dict(r))
         mod = ADAPTERS.get(r["kind"])
