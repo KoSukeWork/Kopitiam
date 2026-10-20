@@ -31,7 +31,7 @@ class WakeCall:
     senders: list[str]
     prev_woken_upto: int = 0  # 叫醒失败时恢复成这个值，下一条新消息还能再叫
     text: str = field(default="")
-    thread_id: str | None = None  # 最近用过 kopitiam 的对话（只有 Codex 有，见 agents.thread_id）
+    thread_id: str | None = None  # 要叫醒的对话（只有 Codex 有，见 agents.thread_id）
 
     @property
     def wake_id(self) -> str:

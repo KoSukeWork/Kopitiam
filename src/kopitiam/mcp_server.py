@@ -23,34 +23,65 @@ INSTRUCTIONS = """本地聊天室，用于和其他 coding agent 及用户沟通
 
 mcp = FastMCP("kopitiam", instructions=INSTRUCTIONS)
 
-_ME: int | None = None
-_THREAD: str | None = None  # 最近一次记下的对话 ID，没变就不重复写库
+_KIND = ""
+_NAME: str | None = None
+_HOST = 0             # agent 本身的进程（db.host_pid）
+_HOST_TAG: str | None = None  # 托管的是哪一类进程（见 agents.host）
+_ME: int | None = None  # 按进程认领的身份
+_THREAD: str | None = None  # 共用一个身份时：最近一次记下的对话 ID，没变就不重复写库
+_BY_THREAD: dict[str, int] = {}  # 一个对话一个身份时：对话 ID → agent id
 
 
-def _me() -> int:
-    if _ME is None:
-        raise RuntimeError("MCP 身份还没认领")
-    return _ME
+def _per_thread() -> bool:
+    """Codex 没给固定名字（--name）：一个对话一个身份。
+
+    Codex 每次调用工具都在 _meta.threadId 里带上对话 ID；它按对话启动 MCP 进程，但启动时还不知道是哪个对话，
+    所以第一次调用工具时才认领。给了 --name 就和以前一样，所有对话共用那一个身份。
+    """
+    return _KIND == "codex" and _NAME is None
 
 
-def _note_thread() -> None:
-    """Codex 每次调用工具都在 _meta.threadId 里带上当前对话 ID：记下来，自动唤醒和导出记录时用。"""
-    global _THREAD
+def _request_thread() -> str | None:
     try:
         meta = mcp.get_context().request_context.meta
         tid = (meta.model_extra or {}).get("threadId") if meta is not None else None
     except Exception:
-        return  # 不在请求里（测试直接调用）或者客户端没带
-    if tid and str(tid) != _THREAD:
-        db.set_thread(_me(), str(tid))
-        _THREAD = str(tid)
+        return None  # 不在请求里（测试直接调用）或者客户端没带
+    return str(tid) if tid else None
+
+
+def _thread_cwd(thread: str) -> str:
+    """对话的项目文件夹：Codex 的记录文件开头写着；新对话还没写出来时用自己的工作目录（Codex 在那里启动 MCP）。"""
+    from .export.codex import find_by_thread, header_cwd
+
+    try:
+        path = find_by_thread(thread)
+        cwd = header_cwd(path) if path else None
+    except OSError:
+        cwd = None
+    return cwd or os.getcwd()
+
+
+def _me() -> int:
+    global _ME, _THREAD
+    tid = _request_thread()
+    if tid and _per_thread():
+        if tid not in _BY_THREAD:
+            _BY_THREAD[tid] = db.claim_thread(_KIND, tid, _thread_cwd(tid), pid=_HOST, host=_HOST_TAG)
+        return _BY_THREAD[tid]
+    if _ME is None:
+        _ME = db.claim(kind=_KIND, cwd=os.getcwd(), name=_NAME, pid=_HOST)
+    if tid and tid != _THREAD:
+        # 共用一个身份：记下最近用过 kopitiam 的对话，自动唤醒和导出记录时用
+        db.set_thread(_ME, tid)
+        _THREAD = tid
+    return _ME
 
 
 def _call(fn, *args, **kwargs) -> str:
-    """工具入口统一兜底：任何意外都变成「错误：」文本，不向客户端抛异常。"""
+    """工具入口统一兜底：先找到自己的身份（fn 的第一个参数），任何意外都变成「错误：」文本，不向客户端抛异常。"""
     try:
-        _note_thread()
-        return fn(*args, **kwargs)
+        return fn(_me(), *args, **kwargs)
     except Exception as e:
         return f"错误：{e}"
 
@@ -58,64 +89,90 @@ def _call(fn, *args, **kwargs) -> str:
 @mcp.tool()
 def whoami() -> str:
     """看看自己是谁（名字、类型、工作目录），以及有多少条未读。"""
-    return _call(Chat().whoami, _me())
+    return _call(Chat().whoami)
 
 
 @mcp.tool()
 def who() -> str:
     """列出聊天室里的所有 agent（在线的排前面），用来决定发给谁。"""
-    return _call(Chat().who)
+    return _call(lambda me: Chat().who())
 
 
 @mcp.tool()
 def send(text: str, to: list[str] | None = None, files: list[str] | None = None) -> str:
     """发消息。to 是接收者名字列表，留空或写 all 发给所有人；files 是附件路径列表（长内容请写成文件再发）。"""
-    return _call(Chat().send, _me(), text, to, files)
+    return _call(Chat().send, text, to, files)
 
 
 @mcp.tool()
 def read(limit: int = 30) -> str:
     """读新消息（看过就标记已读）。用户叫你看聊天室时调用这个。"""
-    return _call(Chat().read, _me(), limit)
+    return _call(Chat().read, limit)
 
 
 @mcp.tool()
 def history(n: int = 20, with_agent: str | None = None) -> str:
     """翻最近的历史消息（包括自己发的），不影响未读标记。with_agent 只看和某个 agent 的往来。"""
-    return _call(Chat().history, _me(), n, with_agent)
+    return _call(Chat().history, n, with_agent)
 
 
 @mcp.tool()
 def rename(new_name: str) -> str:
     """给自己改一个更好记的名字，改过的名字下次启动还在。"""
-    return _call(Chat().rename, _me(), new_name)
+    return _call(Chat().rename, new_name)
 
 
 @mcp.tool()
 def set_cwd(path: str) -> str:
     """修正自己的工作目录（导出对话记录时按它找记录）。必须是已存在的文件夹。"""
-    return _call(Chat().set_cwd, _me(), path)
+    return _call(Chat().set_cwd, path)
 
 
 @mcp.tool()
 def export_context(mode: str = "clean", session_file: str | None = None) -> str:
     """把自己当前的对话记录导出成 Markdown 文件（交接任务用）。clean 只保留正文和简短的调用记录。"""
-    return _call(Chat().export_context, _me(), mode, session_file)
+    return _call(Chat().export_context, mode, session_file)
 
 
-def start(kind: str, name: str | None = None) -> int:
-    """认领身份并注册退出清理；返回 agent id（不进入事件循环，测试用）。"""
-    global _ME
+def _release() -> None:
+    """进程退出：把认领过的身份标成离线。
+
+    桌面版托管的对话身份不动：Codex 会卸载闲着的对话（连同它的 MCP 进程），但桌面版开着就叫得醒；
+    桌面版关了，is_online 自然会当它离线。
+    """
+    ids = [] if _HOST_TAG == "codex-desktop" else list(_BY_THREAD.values())
+    if _ME is not None:
+        ids.append(_ME)
+    for agent_id in ids:
+        db.release(agent_id, _HOST)
+
+
+def start(kind: str, name: str | None = None) -> int | None:
+    """认领身份并注册退出清理；返回 agent id（不进入事件循环，测试用）。
+
+    一个对话一个身份时（见 _per_thread）这里还不认领，返回 None；桌面版先把以前的对话身份接上（db.adopt）。
+    """
+    global _KIND, _NAME, _HOST, _HOST_TAG, _ME, _THREAD
     db.init_db()
     try:
         db.purge_stale()  # 顺手清理很久不用、又没有消息的旧身份；失败不影响启动
     except Exception:
         pass
-    host = db.host_pid()  # agent 本身的进程：同一个 agent 开的多个 MCP 进程共用一个身份
-    agent_id = db.claim(kind=kind, cwd=os.getcwd(), name=name, pid=host)
-    atexit.register(db.release, agent_id, host)
-    _ME = agent_id
-    return agent_id
+    _KIND, _NAME, _ME, _THREAD = kind, name, None, None
+    _BY_THREAD.clear()
+    _HOST = db.host_pid()  # agent 本身的进程：同一个 agent 开的多个 MCP 进程共用一个身份
+    _HOST_TAG = None
+    if kind == "codex":
+        from .wake.codex import hosted_by_desktop
+        if hosted_by_desktop(_HOST):
+            _HOST_TAG = "codex-desktop"
+    atexit.register(_release)
+    if _per_thread():
+        if _HOST_TAG:
+            db.adopt(kind, _HOST_TAG, _HOST)
+        return None
+    _ME = db.claim(kind=kind, cwd=os.getcwd(), name=name, pid=_HOST)
+    return _ME
 
 
 def run(kind: str, name: str | None = None) -> None:

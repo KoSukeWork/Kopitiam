@@ -206,3 +206,54 @@ def test_host_pid_is_a_live_ancestor():
     h = db.host_pid()
     assert psutil.pid_exists(h)
     assert h in {p.pid for p in psutil.Process(os.getpid()).parents()} | {os.getpid()}
+
+
+# ---- Codex：一个对话一个身份 ----
+
+
+def _names(c) -> dict[int, str]:
+    return {r[0]: r[1] for r in c.execute("SELECT id, name FROM agents")}
+
+
+def test_claim_thread_one_identity_per_conversation(home):
+    proj, other = str(home / "Client"), str(home / "Other")
+    empty = db.claim("codex", cwd=proj, pid=os.getpid())  # 以前按文件夹认领的旧身份：没消息
+    used = db.claim("codex", cwd=other, pid=os.getpid())  # 有消息
+    db.Chat().send(db.user_id(), "给旧身份", ["codex@Other"])
+    db.release(empty)
+    db.release(used)
+
+    a = db.claim_thread("codex", "t-1", proj, pid=os.getpid())
+    b = db.claim_thread("codex", "t-2", proj, pid=os.getpid())  # 同一个文件夹的另一个对话
+    assert db.claim_thread("codex", "t-1", proj, pid=os.getpid()) == a  # 同一个对话认领回同一个身份
+    o = db.claim_thread("codex", "t-3", other, pid=os.getpid())
+    with db._conn() as c:
+        names = _names(c)
+        threads = {r[0]: r[1] for r in c.execute("SELECT id, thread_id FROM agents")}
+    assert names[a] == "codex@Client" and empty not in names  # 没消息的旧身份删掉，名字给这个对话
+    assert names[b] == "codex@Client-2"
+    assert o == used and threads[o] == "t-3"  # 有消息的旧身份接着用（历史和未读都在）
+    assert "给旧身份" in db.Chat().read(o)
+
+    db.Chat().rename(a, "主对话")
+    assert db.claim_thread("codex", "t-1", proj, pid=os.getpid()) == a  # 改过的名字跟着对话
+    # 不按对话认领时（没有对话 ID 的旧版 Codex），不会拿走绑了对话的身份
+    d = db.claim("codex", cwd=proj, pid=os.getpid())
+    assert d not in (a, b)
+
+
+def test_adopt_reconnects_recent_desktop_conversations(home):
+    proj = str(home / "Client")
+    desk = db.claim_thread("codex", "t-1", proj, pid=os.getpid(), host="codex-desktop")
+    cli = db.claim_thread("codex", "t-2", proj, pid=os.getpid())  # 命令行窗口里的：窗口关了就叫不醒
+    stale = db.claim_thread("codex", "t-3", proj, pid=os.getpid(), host="codex-desktop")
+    for i in (desk, cli, stale):
+        db.release(i)  # 桌面版关了
+    with db._conn() as c:
+        c.execute("UPDATE agents SET last_seen='2020-01-01T00:00:00' WHERE id=?", (stale,))
+    assert db.adopt("codex", "codex-desktop", os.getpid()) == 1  # 桌面版重开
+    with db._conn() as c:
+        online = {r["id"]: db.is_online(r) for r in c.execute("SELECT * FROM agents")}
+        seen = c.execute("SELECT last_seen FROM agents WHERE id=?", (stale,)).fetchone()[0]
+    assert online[desk] and not online[cli] and not online[stale]  # 很久没用的不接
+    assert seen == "2020-01-01T00:00:00"

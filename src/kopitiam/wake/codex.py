@@ -1,7 +1,8 @@
 """Codex 适配器。
 
-Codex 每次调用 kopitiam 的工具，都在 _meta.threadId 里带上当前对话 ID（MCP 进程记在 agents.thread_id），
-所以知道「最近用过 kopitiam 的对话」是哪个。怎么把提示交给它，要看这个对话由谁托管：
+Codex 每次调用 kopitiam 的工具，都在 _meta.threadId 里带上当前对话 ID：一个对话一个身份，
+对话 ID 记在 agents.thread_id（配置里给了 --name 时所有对话共用一个身份，记的是最近用过 kopitiam 的对话）。
+所以知道要叫醒的是哪个对话。怎么把提示交给它，要看这个对话由谁托管：
 
 - 桌面版（kopitiam 的 MCP 进程挂在桌面版自己的 app-server 下面）：把提示排进 Codex 的共享队列
   ~/.codex/queue_1.sqlite（和在桌面版里「排队」发一条一样）。桌面版自己会发现队列变了：对话闲着马上开始，
@@ -279,7 +280,7 @@ def _toast(obj: dict, thread: str | None, tag: str, why: str) -> None:
 
     who = "、".join(obj.get("senders") or []) or "有人"
     title = thread_title(thread) if thread else None
-    where = f"「{title}」" if title else "最近用过 kopitiam 的那个对话"
+    where = f"「{title}」" if title else "它的对话"
     notify.toast(f"{obj.get('name') or 'codex'} 有新消息在等它",
                  f"{who} 发来 {obj.get('count') or 1} 条。{why}"
                  f"点这里打开{where}，随便跟它说一句，它这一轮做完就会去读。",
@@ -364,16 +365,14 @@ def hook_busy(stdin_text: str) -> None:
     _set_busy(data.get("session_id"), True)
 
 
-def _already_read(pid: int, upto) -> bool:
-    """用户在这期间已经让它读过了（last_read 到了这批消息）：提示过期，不用再接力。"""
-    if not isinstance(upto, int):
+def _already_read(thread: str | None, upto) -> bool:
+    """用户在这期间已经让它读过了（那个对话的身份 last_read 到了这批消息）：提示过期，不用再接力。"""
+    if not thread or not isinstance(upto, int):
         return False
-    from contextlib import closing
-
     from .. import db
     with closing(db.connect()) as c:
-        row = c.execute("SELECT last_read FROM agents WHERE pid=? AND kind='codex'", (pid,)).fetchone()
-    return row is not None and row["last_read"] >= upto
+        row = c.execute("SELECT MAX(last_read) FROM agents WHERE thread_id=? AND kind='codex'", (thread,)).fetchone()
+    return row[0] is not None and row[0] >= upto
 
 
 def hook_stop(stdin_text: str) -> str:
@@ -396,7 +395,7 @@ def _handoff(session: str | None) -> str:
     thread = obj.get("thread")
     if thread and session and thread != session:
         return ""  # 同一个 Codex 里别的对话：留给用过 kopitiam 的那个
-    if not signals.take(obj["id"]) or _already_read(pid, obj.get("upto")):
+    if not signals.take(obj["id"]) or _already_read(thread, obj.get("upto")):
         return ""
     # ensure_ascii：Windows 管道默认不是 UTF-8，中文用 \u 转义最稳
     return json.dumps({"decision": "block", "reason": obj["text"]})

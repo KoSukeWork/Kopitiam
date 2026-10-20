@@ -1371,7 +1371,7 @@ function hiddenCard(a) {
 
 function agentRow(a) {
   const div = el("div", "agent" + (a.online ? "" : " off") + (a.name === selected ? " active" : ""));
-  div.title = a.cwd;
+  div.title = a.title ? a.title + "\\n" + a.cwd : a.cwd;
   div.dataset.name = a.name;
   const info = el("div", "info");
   const line1 = el("div", "line1");
@@ -1379,7 +1379,7 @@ function agentRow(a) {
   if (a.name !== "user") line1.append(el("span", "kind", kindLabel(a.kind)));
   const sub = a.name === "user" ? "你 · 网页"
     : a.kind === "remote" ? ((a.peer_name && a.peer_name !== a.name ? a.peer_name + " · " : "") + (a.online ? "在线" : "离线") + " · " + a.cwd)
-    : a.cwd;
+    : a.title ? a.title + " · " + a.cwd : a.cwd;
   info.append(line1, el("div", "cwd", sub));
   const av = avatar(a.name, a.online, false, a.kind);
   if ((talking[a.name] || 0) > Date.now()) av.classList.add("talk");
@@ -1434,7 +1434,7 @@ function updateConvbar() {
   const a = selected && agentsByName[selected];
   $("convtitle").textContent = selected === "user" ? "我的消息" : selected ? "与 " + selected + " 的对话" : "全部消息";
   $("convsub").textContent = selected === "user" ? "发给你的、你发的都在这里；在这里发送 = 发给自己（备忘）"
-    : selected ? (a ? kindLabel(a.kind) + " · " + (a.online ? "在线" : "离线") + " · " + a.cwd : "")
+    : selected ? (a ? kindLabel(a.kind) + " · " + (a.online ? "在线" : "离线") + " · " + (a.title ? a.title + " · " : "") + a.cwd : "")
     : "所有人之间的消息都在这里";
   $("showAll").hidden = !selected;
   $("convAvatar").hidden = !selected;

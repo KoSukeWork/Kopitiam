@@ -420,6 +420,65 @@ def test_mcp_records_codex_thread_id(home):
     anyio.run(go)
 
 
+def test_mcp_codex_one_identity_per_thread(home, monkeypatch):
+    import anyio
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from kopitiam import mcp_server
+    from kopitiam.export import codex as codex_export
+    from kopitiam.wake import codex
+
+    fake = home / "fake-codex"
+    day = fake / "sessions" / "2026" / "10" / "19"
+    day.mkdir(parents=True)
+    proj = home / "Client"
+    for tid in ("t-1", "t-2"):  # 两个对话都在 Client 文件夹（Codex 自己的工作目录不一定是它）
+        (day / f"rollout-2026-10-19T10-00-00-{tid}.jsonl").write_text(
+            json.dumps({"type": "session_meta", "payload": {"id": tid, "cwd": str(proj)}}) + "\n", encoding="utf-8")
+    (fake / "session_index.jsonl").write_text(
+        json.dumps({"id": "t-2", "thread_name": "查材质标签"}, ensure_ascii=False) + "\n", encoding="utf-8")
+    monkeypatch.setattr(codex_export, "ROOT", fake / "sessions")
+    monkeypatch.setattr(codex, "hosted_by_desktop", lambda pid: True)
+
+    assert mcp_server.start("codex") is None  # 启动时还不知道是哪个对话：不认领
+
+    async def go():
+        async with create_connected_server_and_client_session(mcp_server.mcp) as client:
+            out = [await client.call_tool("whoami", {}, meta={"threadId": t}) for t in ("t-1", "t-2", "t-1")]
+            out.append(await client.call_tool("who", {}, meta={"threadId": "t-2"}))
+            return [r.content[0].text for r in out]
+
+    me1, me2, again, who = anyio.run(go)
+    assert me1.startswith("你是 codex@Client（") and str(proj) in me1
+    assert me2.startswith("你是 codex@Client-2（") and again == me1
+    assert "codex@Client-2" in who and "（对话：查材质标签）" in who
+    with closing(db.connect()) as c:
+        rows = {r["name"]: r for r in c.execute("SELECT * FROM agents WHERE kind='codex'")}
+    assert set(rows) == {"codex@Client", "codex@Client-2"}
+    assert rows["codex@Client"]["thread_id"] == "t-1" and rows["codex@Client-2"]["host"] == "codex-desktop"
+
+    mcp_server._release()  # 桌面版卸载了这个对话：桌面版还开着就还叫得醒，不标离线
+    with closing(db.connect()) as c:
+        assert all(db.is_online(r) for r in c.execute("SELECT * FROM agents WHERE kind='codex'"))
+        c.execute("UPDATE agents SET pid=NULL WHERE kind='codex'")  # 桌面版关了
+    mcp_server.start("codex")  # 重开：以前的对话身份先接上，不用等它们再调用一次
+    with closing(db.connect()) as c:
+        assert all(db.is_online(r) for r in c.execute("SELECT * FROM agents WHERE kind='codex'"))
+
+
+def test_thread_titles_follow_renames(home):
+    from kopitiam.export import codex as codex_export
+
+    index = home / ".codex" / "session_index.jsonl"
+    index.parent.mkdir()
+    index.write_text(json.dumps({"id": "t", "thread_name": "旧标题"}, ensure_ascii=False) + "\n", encoding="utf-8")
+    assert codex_export.thread_title("t", home) == "旧标题"
+    with index.open("a", encoding="utf-8") as f:  # 改名会追加一行
+        f.write(json.dumps({"id": "t", "thread_name": "新标题"}, ensure_ascii=False) + "\n")
+    assert codex_export.thread_title("t", home) == "新标题"
+    assert codex_export.thread_title("x", home) is None
+
+
 def _thread(agent_id: int):
     with closing(db.connect()) as c:
         return c.execute("SELECT thread_id FROM agents WHERE id=?", (agent_id,)).fetchone()[0]
@@ -587,7 +646,7 @@ def test_codex_remind_fast_when_hooks_say_idle(codex_room, toasts):
     assert len(toasts) == 1  # 同一批只提醒一次
     title, body, link = toasts[0]
     assert "codex 有新消息在等它" in title and "user 发来 1 条" in body
-    assert "最近用过 kopitiam 的那个对话" in body  # 不知道标题
+    assert "点这里打开它的对话" in body  # 不知道标题
     assert link == "codex://threads/thread-1"
 
 

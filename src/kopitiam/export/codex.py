@@ -30,24 +30,41 @@ def find_by_thread(thread_id: str, home: Path | None = None) -> Path | None:
     return None
 
 
-def thread_title(thread_id: str, home: Path | None = None) -> str | None:
-    """对话标题：~/.codex/session_index.jsonl 里这个对话的 thread_name（改过名会追加一行，取最后一条）。"""
-    base = (home / ".codex") if home else ROOT.parent
-    title = None
+_TITLES: dict[Path, tuple[float, int, dict[str, str]]] = {}  # session_index.jsonl → (mtime, 大小, 标题表)
+
+
+def thread_titles(home: Path | None = None) -> dict[str, str]:
+    """所有对话的标题：~/.codex/session_index.jsonl 里的 thread_name（改过名会追加一行，取最后一条）。
+
+    网页每隔几秒就要列一次成员，文件没变就用上次读的。
+    """
+    path = ((home / ".codex") if home else ROOT.parent) / "session_index.jsonl"
     try:
-        with (base / "session_index.jsonl").open(encoding="utf-8", errors="replace") as f:
+        st = path.stat()
+    except OSError:
+        return {}
+    hit = _TITLES.get(path)
+    if hit and hit[:2] == (st.st_mtime, st.st_size):
+        return hit[2]
+    titles: dict[str, str] = {}
+    try:
+        with path.open(encoding="utf-8", errors="replace") as f:
             for line in f:
-                if thread_id not in line:
-                    continue
                 try:
                     obj = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(obj, dict) and obj.get("id") == thread_id and obj.get("thread_name"):
-                    title = str(obj["thread_name"])
+                if isinstance(obj, dict) and obj.get("id") and obj.get("thread_name"):
+                    titles[str(obj["id"])] = str(obj["thread_name"])
     except OSError:
-        return None
-    return title
+        return {}
+    _TITLES[path] = (st.st_mtime, st.st_size, titles)
+    return titles
+
+
+def thread_title(thread_id: str, home: Path | None = None) -> str | None:
+    """一个对话的标题（没有就是 None）。"""
+    return thread_titles(home).get(thread_id)
 
 
 def header_cwd(path: Path) -> str | None:

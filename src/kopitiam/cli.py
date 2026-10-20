@@ -88,7 +88,7 @@ def _run_wake() -> int:
 SETUP_DONE = {
     "claude": "重开 Claude Code 后生效。",
     "codex": "Codex 会让你确认信任这几个新 hook（命令行版用 /hooks 查看），确认后重开 Codex。\n"
-             "另外，要在接收消息的那个对话里先用一次 kopitiam（比如让它调用 whoami），kopitiam 才知道是哪个对话。",
+             "另外，每个对话要先用一次 kopitiam（比如让它调用 whoami）才有自己的身份，才叫得醒。",
 }
 
 

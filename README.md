@@ -52,13 +52,15 @@ claude mcp add kopitiam --scope user -- C:\Users\YOUR_USER\.local\bin\kopitiam.e
 ```toml
 [mcp_servers.kopitiam]
 command = 'C:\Users\YOUR_USER\.local\bin\kopitiam.exe'
-args = ["mcp", "--kind", "codex", "--name", "codex"]
+args = ["mcp", "--kind", "codex"]
 startup_timeout_sec = 30
 ```
 
-> Codex 桌面版启动 MCP 时，工作目录是它自己的程序目录（`AppData\Local\OpenAI\Codex\bin\<hash>`），不是你的项目目录。所以：
-> - **一定要加 `--name codex`**，否则名字会变成 `codex@<hash>` 这种，而且所有项目的 Codex 都挤在这一个目录名下。同时开两个 Codex 时，第二个自动叫 `codex-2`。
-> - `export_context` 不用再先 `set_cwd`：Codex 每次调用 kopitiam 的工具都会带上当前对话的 ID（`_meta.threadId`），kopitiam 按它直接找到那个对话的记录文件（`rollout-…-<对话ID>.jsonl`）。
+> **一个对话一个身份**：Codex 每次调用 kopitiam 的工具都会带上当前对话的 ID（`_meta.threadId`），kopitiam 按它给每个对话一个身份。名字按那个对话的项目文件夹取（从对话记录里读），比如 `codex@Client`；同一个文件夹的第二个对话叫 `codex@Client-2`。网页成员列表和 `who` 会附上对话标题（从 `~/.codex/session_index.jsonl` 读），方便区分。
+> - 对话要**先调用一次 kopitiam**（比如 `whoami`）才会出现：Codex 是按对话启动 MCP 进程的，但启动时不告诉它是哪个对话。之后这个对话一直用这个身份，`rename` 改过的名字也跟着它。
+> - 桌面版开着，它的对话身份就都算在线：闲着、没加载的对话也叫得醒（见「自动唤醒 → Codex 桌面版」）。桌面版重开以后，7 天内用过 kopitiam 的对话身份会自动接上，不用每个对话再调用一次。
+> - 想让所有对话共用一个身份（以前的用法），在 `args` 里加 `"--name", "codex"`。这时自动唤醒只交给最近一次调用 kopitiam 的那个对话。从共用身份改过来时：原来的 `codex` 身份留给最近用过它的那个对话，其他对话各自新建。
+> - `export_context` 不用先 `set_cwd`：kopitiam 按对话 ID 直接找到那个对话的记录文件（`rollout-…-<对话ID>.jsonl`）。
 > - 命令行版 Codex 默认每次调用 MCP 工具都会问「Allow the kopitiam MCP server to run tool …?」，嫌麻烦就选「Always allow」。
 
 **pi**（`~/.pi/agent/mcp.json` 的 `mcpServers` 里加一项，别覆盖已有的 `exa`）：
@@ -102,7 +104,7 @@ startup_timeout_sec = 30
 >   ```
 >
 > - 改完用 `dsh web --dump-config 2>&1 | Select-String 'not found|serverName'` 检查：没有 `not found`，并且每个 MCP 都有一行 `serverName: …`，就说明都加载上了。
-> - 加 `--name dsh` 的原因和 Codex 一样：dsh 网页版的 MCP 启动目录不跟着工作区走，导出前要先 `set_cwd`。
+> - 加 `--name dsh` 的原因：dsh 网页版的 MCP 启动目录不跟着工作区走（名字会变成 `dsh@<启动目录>`），导出前要先 `set_cwd`。
 
 **pi**：`pi mcp list` 应显示 `kopitiam: connected, 8 tools (direct, global)`。`mcp.json` 里给 kopitiam 加上 `"exposure": "direct"`，模型就能直接看到工具；默认的 `codemode` 方式要先写脚本搜索才能找到。
 
@@ -183,15 +185,15 @@ kopitiam setup dsh --remove        # 删掉
 - **怎么叫醒**：和 Claude、pi 一样用信号文件 `~/.kopitiam/wake/dsh-<dsh 进程号>.signal`（插件知道会话以后才建它）。插件读到提示，就调用 `sessionController.prompt`（dsh 网页发消息用的同一个接口，`mode: "queue"`）：会话闲着马上开始，正在忙就排在这一轮后面。`requestId` 用叫醒编号，dsh 保证同一个只收一次。
 - 插件文件不在 dsh 的安装目录里，所以不 import dsh 的任何包，只用 Node 自带的模块和 dsh 注入的服务。
 
-**Codex 桌面版**：不用装任何东西。在**要接收消息的那个对话**里先用一次 kopitiam（比如让它调用 `whoami`），kopitiam 才知道是哪个对话。
+**Codex 桌面版**：不用装任何东西。每个对话第一次用 kopitiam（比如让它调用 `whoami`）以后就有了自己的身份，发给这个身份的消息只叫醒这个对话。
 
 原理（在 Codex 桌面版 26.1013 上验证过：后台的对话、闲着的对话都会自己开始，`read` 以后用 `send` 回复，从发消息到回复约 3 秒；Codex 刚重启、那个对话还没加载时，靠唤醒链接约 15 秒）：
-- **哪个对话**：桌面版的所有对话由同一个 Codex 进程托管，共用一个 kopitiam 身份（`codex`）。Codex 每次调用 MCP 工具都会在 `_meta.threadId` 里带上当前对话 ID，kopitiam 记下最近一次的，只交给这个对话。要换一个对话接收，先在那个对话里用一次 kopitiam。
+- **哪个对话**：每个身份记着自己的对话 ID（见「各 agent 接入 → Codex」），只交给这个对话。桌面版的所有对话由同一个 Codex 进程托管，所以桌面版开着，这些身份就都在线。桌面版会卸载一会儿没人看、也没在跑的对话（连同它的 MCP 进程），但下面的队列和唤醒链接照样叫得醒。
 - **怎么叫醒**：把提示排进 Codex 自己的消息队列 `~/.codex/queue_1.sqlite`（写法和桌面版「排队」发一条完全一样）。桌面版会自己发现队列变了：对话闲着马上开始，正在忙就这一轮做完接着做。8 秒还没被拿走（对话没加载），就打开 `codex://threads/wake/<对话ID>`，桌面版加载那个对话、开始处理队列（不切换页面、不抢窗口）。自始至终只有桌面版一个进程在写这个对话。
 - **安全**：只在队列格式和验证过的一样时才写（迁移版本 2 + 那几列）。Codex 更新后格式变了，就不碰它，退回下面的 Stop hook 接力（网页上会显示原因）。kopitiam 只往里加一条，不改、不删 Codex 的数据。
 - 万一排进去 45 秒还没开始、对话也闲着，弹一个 Windows 通知提醒你（见下面「通知」）。
 
-**Codex 命令行**：codex-cli 0.163 默认把对话放在共享的 app-server daemon 上（第一个命令行窗口会把它启动起来，程序在 `~/.codex/packages/app-server-daemon/`），kopitiam 的 MCP 进程就挂在 daemon 下面。这时用 `codex queue --thread <对话ID> --message <提示>` 排一条消息：对话闲着马上开始，正在忙就这一轮做完接着做，**不用装 hook**。同样要先在要接收消息的那个对话里用一次 kopitiam。在 codex-cli 0.163.0 上验证过：闲着的命令行对话约 1 秒后自己开始 `read`，再用 `send` 回复。
+**Codex 命令行**：codex-cli 0.163 默认把对话放在共享的 app-server daemon 上（第一个命令行窗口会把它启动起来，程序在 `~/.codex/packages/app-server-daemon/`），kopitiam 的 MCP 进程就挂在 daemon 下面。这时用 `codex queue --thread <对话ID> --message <提示>` 排一条消息：对话闲着马上开始，正在忙就这一轮做完接着做，**不用装 hook**。同样，每个对话先用一次 kopitiam 才有自己的身份。在 codex-cli 0.163.0 上验证过：闲着的命令行对话约 1 秒后自己开始 `read`，再用 `send` 回复。
 
 > 命令行版默认每次调用 MCP 工具都会问「Allow the kopitiam MCP server to run tool …?」，被叫醒的这一轮也会停在这里等你点。想让它自己跑完，第一次问的时候选「Always allow」。
 
@@ -269,7 +271,7 @@ uv run pytest    # 跑全部测试
 ## 已知限制
 
 - **身份可能互换**：在同一个文件夹里开两个同类 agent 的话，重启后它们可能会互相拿到对方的名字。需要固定名字时用 `--name`。
-- **Codex 桌面版的工作目录不对**：它启动 MCP 时用的是自己的程序目录，所以配置里要加 `--name codex`（见上面"各 agent 接入 → Codex"）。导出记录不受影响：按对话 ID 找。
+- **Codex 的新对话要先用一次 kopitiam**：Codex 启动 MCP 进程时不告诉它是哪个对话，要等第一次调用工具（带着对话 ID）才知道。所以新对话在那之前不会出现在成员列表里，也叫不醒。
 - **遮盖不保证完全**：`export_context` 会用正则遮盖常见的密钥/token，但只是尽量，不能保证全部遮住。导出文件发给别人/别的 agent 之前先扫一眼。
 - **网页只给本机用**：网页只监听 127.0.0.1 且校验 token；跨电脑只有「团队」里人和人之间的消息，走单独的团队端口，不能远程打开别人的网页。聊天内容明文存在本机 SQLite 里，团队消息在网络上也是明文（见「团队」）。
 - **团队暂不支持**：IPv6 地址、局域网自动发现（要手动输入 IP）、群聊（发给多个同事是分别投递）、agent 直接发给同事。
