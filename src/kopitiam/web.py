@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import db, peer
-from .config import FILE_MAX, PEER_PORT, files_dir, safe
+from .config import FILE_MAX, PEER_PORT, WEB_PORT, files_dir, safe
 from .db import Chat
 from .wake import detector
 from .wake import service as wake_service
@@ -50,7 +50,7 @@ def _port_owner(port: int) -> str:
     return ""
 
 
-def make_server(port: int = 8765, *, peer_host: str = "0.0.0.0", peer_port: int = PEER_PORT,
+def make_server(port: int = WEB_PORT, *, peer_host: str = "0.0.0.0", peer_port: int = PEER_PORT,
                 share: bool | None = None, wake: bool = False) -> tuple[ThreadingHTTPServer, str, str]:
     """起 HTTP 服务，返回 (server, token, url)。port=0 让系统随机分配（测试用）。
 
@@ -76,7 +76,7 @@ def make_server(port: int = 8765, *, peer_host: str = "0.0.0.0", peer_port: int 
         srv = _WebServer(("127.0.0.1", port), Handler)
     except OSError as e:
         owner = _port_owner(port)
-        raise SystemExit(f"错误：端口 {port} 被占用（{owner or e}）。换一个端口：kopitiam web --port 8770")
+        raise SystemExit(f"错误：端口 {port} 被占用（{owner or e}）。换一个端口：kopitiam web --port {port + 10}")
     srv.peer_service = service
     if share if share is not None else db.get_meta("share") == "1":
         try:
@@ -90,7 +90,7 @@ def make_server(port: int = 8765, *, peer_host: str = "0.0.0.0", peer_port: int 
     return srv, token, f"http://127.0.0.1:{srv.server_address[1]}/?t={token}"
 
 
-def run(port: int = 8765, open_browser: bool = True, *, peer_host: str = "0.0.0.0",
+def run(port: int = WEB_PORT, open_browser: bool = True, *, peer_host: str = "0.0.0.0",
         peer_port: int = PEER_PORT, share: bool | None = None, wake: bool = True) -> None:
     srv, token, url = make_server(port, peer_host=peer_host, peer_port=peer_port, share=share, wake=wake)
     print(f"kopitiam web 已启动：{url}")  # 网页进程不是 MCP，可以往 stdout 打印
@@ -1062,7 +1062,7 @@ async function renderTeam(body) {
 
   const s3 = tsec("我去加别人", "输入同事网页上显示的地址和配对码");
   const addrIn = el("input", "tin");
-  addrIn.placeholder = "192.168.1.5:8766";
+  addrIn.placeholder = "192.168.1.5:__PEER_PORT__";
   const codeIn = el("input", "tin code-in");
   codeIn.placeholder = "6 位配对码"; codeIn.maxLength = 6; codeIn.inputMode = "numeric";
   const join = el("button", "btn", "配对");
@@ -1696,4 +1696,4 @@ setInterval(poll, 1500);
 </script>
 </body>
 </html>
-"""
+""".replace("__PEER_PORT__", str(PEER_PORT))

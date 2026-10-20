@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from kopitiam import db, peer, web
+from kopitiam import config, db, peer, web
 
 
 # ---- 单元：签名、地址 ----
@@ -40,7 +40,7 @@ def test_sign_and_verify():
 
 
 def test_normalize_address():
-    assert peer.normalize_address("192.168.1.5") == "192.168.1.5:8766"
+    assert peer.normalize_address("192.168.1.5") == f"192.168.1.5:{config.PEER_PORT}"
     assert peer.normalize_address(" http://192.168.1.5:9000/ ") == "192.168.1.5:9000"
     with pytest.raises(peer.PeerError):
         peer.normalize_address("")

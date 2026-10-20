@@ -69,7 +69,7 @@ def verify(secret: str, method: str, path: str, ts: str | None, body: bytes, sig
 # ---- 地址 ----
 
 def normalize_address(addr: str) -> str:
-    """'192.168.1.5' → '192.168.1.5:8766'；去掉 http:// 和路径。暂不支持 IPv6。"""
+    """'192.168.1.5' → '192.168.1.5:25675'（PEER_PORT）；去掉 http:// 和路径。暂不支持 IPv6。"""
     a = (addr or "").strip()
     for prefix in ("http://", "https://"):
         if a.lower().startswith(prefix):

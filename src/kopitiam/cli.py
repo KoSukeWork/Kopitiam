@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from .config import PEER_PORT, WEB_PORT
+
 KINDS = ["claude", "codex", "pi", "dsh", "agent"]
 
 
@@ -18,14 +20,14 @@ def build_parser() -> argparse.ArgumentParser:
     pm.add_argument("--name", default=None, help="固定名字（可选）")
 
     pw = sub.add_parser("web", help="启动本地网页")
-    pw.add_argument("--port", type=int, default=8765)
+    pw.add_argument("--port", type=int, default=WEB_PORT, help=f"网页端口（默认 {WEB_PORT}）")
     pw.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
     share = pw.add_mutually_exclusive_group()
     share.add_argument("--share", dest="share", action="store_const", const=True, default=None,
                        help="这次启动就打开团队连接（默认按上次在网页上的设置）")
     share.add_argument("--no-share", dest="share", action="store_const", const=False,
                        help="这次不打开团队连接")
-    pw.add_argument("--peer-port", type=int, default=8766, help="团队端口（默认 8766）")
+    pw.add_argument("--peer-port", type=int, default=PEER_PORT, help=f"团队端口（默认 {PEER_PORT}）")
     pw.add_argument("--peer-host", default="0.0.0.0",
                     help="团队端口绑定的地址（默认所有网卡；只想走 Tailscale 就填 Tailscale 的 IP）")
     pw.add_argument("--no-wake", action="store_true", help="这次不运行自动唤醒")

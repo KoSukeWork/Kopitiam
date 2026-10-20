@@ -30,7 +30,7 @@ uv tool install --editable <本项目目录>
 | 命令 | 作用 |
 |---|---|
 | `kopitiam mcp --kind <claude\|codex\|pi\|dsh\|agent> [--name 名字]` | 启动 stdio MCP server（给 agent 用） |
-| `kopitiam web [--port 8765] [--no-open] [--share\|--no-share] [--peer-port 8766] [--peer-host 0.0.0.0] [--no-wake]` | 启动本地网页（只监听 127.0.0.1，带 token），同时运行自动唤醒；`--share` 等参数见下面的「团队」 |
+| `kopitiam web [--port 25674] [--no-open] [--share\|--no-share] [--peer-port 25675] [--peer-host 0.0.0.0] [--no-wake]` | 启动本地网页（只监听 127.0.0.1，带 token），同时运行自动唤醒；`--share` 等参数见下面的「团队」 |
 | `kopitiam setup <claude\|codex\|pi\|dsh> [--print] [--remove]` | 给 Claude Code / Codex / pi / dsh 装自动唤醒的接收端（见「自动唤醒」） |
 | `kopitiam wake` | 不开网页时单独运行自动唤醒 |
 | `kopitiam export --agent <claude\|codex\|pi\|dsh> --cwd <项目目录> [--mode clean\|full] [--session-file P]` | 调试用：把某个 agent 的对话记录导出成 Markdown |
@@ -122,9 +122,9 @@ startup_timeout_sec = 30
 
 ## 网页
 
-`kopitiam web` 后打开 `http://127.0.0.1:8765/?t=<token>`（默认自动开浏览器）。网页以 `user` 身份发言，能看到所有消息（包括 agent 之间互发的），能上传附件。只监听 127.0.0.1；每个请求都校验 Host 和 token；token 不对返回 403。
+`kopitiam web` 后打开 `http://127.0.0.1:25674/?t=<token>`（默认自动开浏览器）。网页以 `user` 身份发言，能看到所有消息（包括 agent 之间互发的），能上传附件。只监听 127.0.0.1；每个请求都校验 Host 和 token；token 不对返回 403。
 
-> 端口 8765 被别的程序占了（比如代理软件 Clash 有时会用到它），启动时会提示是哪个程序，换一个端口就行：`kopitiam web --port 8770`。端口只影响网页地址，agent 和自动唤醒都不依赖它。
+> 默认端口是 25674（kopi 在手机键盘上是 5674），团队端口是 25675。以前用的 8765/8766 是 Python websockets 文档里的示例端口，很多工具都用，代理软件 Clash 也会占 8765，所以换掉了。还是被占用的话，启动时会提示是哪个程序，换一个端口就行：`kopitiam web --port 25684`。端口只影响网页地址，agent 和自动唤醒都不依赖它。
 
 点左栏的 `user` 是「我的消息」：发给你的、你发的都在这里，在这里发送 = 发给自己（备忘）。agent 之间互发的消息不在这里，要看「全部消息」或点其中一个 agent。
 
@@ -242,11 +242,13 @@ kopitiam setup codex --remove  # 删掉
 **安全规则**（设计上故意这样）：
 - 同事发来的消息**只到你**，本机 agent 看不到；要 agent 处理，得你点「转发」。这样别人没法绕过你直接给你的 agent 下指令。
 - agent **不能**直接发给同事（`send` 会报错，提示让用户转发），免得 agent 把代码或日志擅自发出去。
-- 团队端口（默认 8766）只开 `/peer/*` 几个接口；本机网页的 `/api`、`/files` 仍然只给 127.0.0.1。每个请求都用配对时生成的密钥做 HMAC 签名，带时间戳防重放。
+- 团队端口（默认 25675，以前是 8766）只开 `/peer/*` 几个接口；本机网页的 `/api`、`/files` 仍然只给 127.0.0.1。每个请求都用配对时生成的密钥做 HMAC 签名，带时间戳防重放。
 - **内容不加密**（只用 Python 标准库）：同一个局域网直接用；跨网络请用 **Tailscale** 这类自带加密的组网工具，并且可以用 `--peer-host <你的 Tailscale IP>` 只在 Tailscale 网卡上开端口。
 - Windows 第一次打开团队连接时可能弹出防火墙提示，选「允许专用网络」。
 
-命令行：`--share` / `--no-share` 这次启动强制开 / 关团队连接（不加就按上次在网页上的设置）；`--peer-port` 改端口；`--peer-host` 改绑定的网卡。数据存在同一个 `chat.db` 里（`peers`、`outbox` 两张表），同事的身份类型是 `remote`，解除配对后聊天记录保留，收进「已隐藏」。
+命令行：`--share` / `--no-share` 这次启动强制开 / 关团队连接（不加就按上次在网页上的设置）；`--peer-port` 改端口；`--peer-host` 改绑定的网卡。
+
+> 从旧版本（团队端口 8766）升级：配对过的同事之间，任何一方发一条消息，对方就会记下新的端口（每个请求都带着自己的团队端口）。对方还是旧版本时，配对填地址要写上端口（`IP:8766`）。数据存在同一个 `chat.db` 里（`peers`、`outbox` 两张表），同事的身份类型是 `remote`，解除配对后聊天记录保留，收进「已隐藏」。
 
 ## 开发
 
