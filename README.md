@@ -4,6 +4,12 @@
 
 ## 安装
 
+> **让 AI 帮你装**：把下面这句话发给你正在用的 coding agent（Claude Code、Codex 等）。它会按 [AI_SETUP.md](AI_SETUP.md) 从安装一直做到配置好各个 agent，改文件前会先备份，要重开哪些程序最后会告诉你：
+>
+> ```
+> 请阅读 https://raw.githubusercontent.com/KoSukeWork/Kopitiam/master/AI_SETUP.md ，按里面的步骤帮我安装和配置 kopitiam。
+> ```
+
 要求：Windows + PowerShell、[uv](https://docs.astral.sh/uv/)（会自动准备 Python 3.14）。
 
 推荐直接从 GitHub 安装：
