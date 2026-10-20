@@ -188,7 +188,7 @@ kopitiam setup dsh --remove        # 删掉
 
 它把插件复制到 `~/.dsh/profiles/<profile>/kopitiam-wake-<哈希>.mjs`（文件名带内容的哈希：dsh 用 `import()` 加载插件，同一个路径会一直用缓存里的旧版本），并在那个 profile 的 `cordis.patch.yml` 末尾加一段 `- insert:`（前后有 `# >>> kopitiam 自动唤醒` / `# <<< kopitiam 自动唤醒` 标记行，`--remove` 整段删掉，别的内容不动）。web profile 默认 `patchReload: live`，改完自动重新加载；别的 profile 要重开 dsh。然后每个会话先用一次 kopitiam（比如让它调用 `whoami`），就有了自己的身份。
 
-> 以前装过插件的，更新 kopitiam 以后要再运行一次 `kopitiam setup dsh`：插件是复制过去的，不会自己更新。
+> 以前装过插件的，更新 kopitiam 以后要再运行一次 `kopitiam setup dsh`，然后**重开 dsh**：插件是复制过去的，不会自己更新；而且实测（dsh 0.2）热加载能换掉 MCP 的配置，换不掉已经加载的插件。
 
 原理：
 - **哪个会话在调用**：一个 dsh 进程管着好几个会话，却只有一个 kopitiam MCP 进程，而且 dsh 调用 MCP 工具时只发工具名和参数，不带会话信息（参数在插件能碰到之前就冻结了，也塞不进去）。所以插件包住每次 `mcp__kopitiam__*` 调用（`tools/execute` 事件）：调用前把会话 ID、工作目录、标题写进 `~/.kopitiam/wake/dsh-<dsh 进程号>.calling.json`，调用完删掉；kopitiam 收到请求时读它认人。kopitiam 的调用在插件里排队、一次一个，几个会话同时调用也不会认错（kopitiam 的工具都是几毫秒的事）。
