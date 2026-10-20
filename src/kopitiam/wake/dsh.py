@@ -1,6 +1,6 @@
 """dsh 适配器：靠 dsh 的 cordis 插件叫醒（sessionController.prompt，和在网页上发消息一样），闲着也能叫醒。
 
-- 插件 dsh_wake.mjs 由 kopitiam setup dsh 复制到 ~/.dsh/profiles/<profile>/kopitiam-wake.mjs，
+- 插件 dsh_wake.mjs 由 kopitiam setup dsh 复制到 ~/.dsh/profiles/<profile>/kopitiam-wake-<哈希>.mjs，
   并在那个 profile 的 cordis.patch.yml 末尾加一段 insert（用标记行包起来，--remove 时整段删掉）。
   web profile 默认 patchReload: live，改完不用重开 dsh。
 - 一个 dsh 进程管着好几个会话，只有一个 kopitiam MCP 进程，调用工具时 dsh 也不带会话信息：
@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -21,7 +22,6 @@ from ..config import safe, wake_dir
 from . import signals
 
 PLUGIN = Path(__file__).with_name("dsh_wake.mjs")
-INSTALLED_NAME = "kopitiam-wake.mjs"
 BEGIN = "# >>> kopitiam 自动唤醒（kopitiam setup dsh 加的；kopitiam setup dsh --remove 会删掉这一段）"
 END = "# <<< kopitiam 自动唤醒"
 
@@ -86,6 +86,12 @@ def _strip(text: str) -> str:
     return "".join(out)
 
 
+def installed_name() -> str:
+    """装进 profile 的插件文件名带上内容的哈希。dsh 用 import() 加载插件，同一个路径拿到的是缓存里的旧模块；
+    插件一改路径就变，web profile 热加载时才会真的换成新插件，不用重开 dsh。"""
+    return f"kopitiam-wake-{hashlib.sha256(PLUGIN.read_bytes()).hexdigest()[:8]}.mjs"
+
+
 def install(profile: Path, *, remove: bool = False) -> Path:
     """装进（或删掉）一个 profile；返回插件文件的位置。改之前先备份成 cordis.patch.yml.bak-kopitiam。"""
     patch = profile / "cordis.patch.yml"
@@ -94,11 +100,12 @@ def install(profile: Path, *, remove: bool = False) -> Path:
         text = patch.read_text(encoding="utf-8")
         shutil.copy2(patch, patch.with_name(patch.name + ".bak-kopitiam"))
     text = _strip(text)
-    plugin = profile / INSTALLED_NAME
-    if remove:
-        plugin.unlink(missing_ok=True)
-    else:
+    plugin = profile / installed_name()
+    if not remove:
         shutil.copyfile(PLUGIN, plugin)  # 先放插件再改 patch：web profile 一改 patch 就会热加载
         text = (text.rstrip("\n") + "\n\n" if text.strip() else "") + patch_block(plugin)
     patch.write_text(text, encoding="utf-8")
+    for old in profile.glob("kopitiam-wake*.mjs"):  # 以前装的版本（dsh 已经加载的留在内存里，删文件不影响）
+        if remove or old != plugin:
+            old.unlink(missing_ok=True)
     return plugin

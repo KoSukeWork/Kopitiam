@@ -977,8 +977,11 @@ def test_dsh_install_appends_marked_block_and_removes_it(home):
     (home / "profiles" / "desktop" / "cordis.patch.yml").write_text("- id: other\n", encoding="utf-8")
     assert dsh.target_profiles(home / "profiles") == [profile]  # 只装进配了 kopitiam MCP 的
 
+    old = profile / "kopitiam-wake.mjs"
+    old.write_text("// 以前装的版本", encoding="utf-8")
     plugin = dsh.install(profile)
     dsh.install(profile)  # 再装一次不会重复
+    assert plugin.name.startswith("kopitiam-wake-") and not old.exists()  # 文件名带哈希，旧版本删掉
     text = (profile / "cordis.patch.yml").read_text(encoding="utf-8")
     assert text.startswith(original) and text.count(dsh.BEGIN) == 1 and text.count("id: kopitiam-wake") == 1
     assert f"name: '{plugin}'" in text

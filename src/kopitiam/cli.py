@@ -150,8 +150,8 @@ def _run_setup_dsh(args) -> int:
         return 1
     for profile in profiles:
         if args.print_only:
-            print(f"会把插件复制到 {profile / dsh.INSTALLED_NAME}，并在 {profile / 'cordis.patch.yml'} 末尾加：\n"
-                  + dsh.patch_block(profile / dsh.INSTALLED_NAME))
+            print(f"会把插件复制到 {profile / dsh.installed_name()}，并在 {profile / 'cordis.patch.yml'} 末尾加：\n"
+                  + dsh.patch_block(profile / dsh.installed_name()))
             continue
         try:
             dsh.install(profile, remove=args.remove)
@@ -162,7 +162,7 @@ def _run_setup_dsh(args) -> int:
               f"（{profile / 'cordis.patch.yml'}，原文件备份成 cordis.patch.yml.bak-kopitiam）")
     if not args.remove and not args.print_only:
         print("web profile 会自动重新加载；别的 profile 要重开 dsh。\n"
-              "然后在要接收消息的那个会话里先用一次 kopitiam（比如让它调用 whoami），kopitiam 才知道是哪个会话。")
+              "然后每个会话先用一次 kopitiam（比如让它调用 whoami），就有了自己的身份。")
     return 0
 
 
