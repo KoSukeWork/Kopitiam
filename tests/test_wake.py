@@ -996,6 +996,24 @@ def test_dsh_install_appends_marked_block_and_removes_it(home):
     assert "''" in dsh.patch_block(Path("C:/it's/kopitiam-wake.mjs"))  # YAML 单引号要写两遍
 
 
+def test_setup_dsh_says_restart_when_the_plugin_changed(home, monkeypatch, capsys):
+    from kopitiam import cli
+    from kopitiam.wake import dsh
+
+    profile = home / "profiles" / "web"
+    profile.mkdir(parents=True)
+    (profile / "cordis.patch.yml").write_text("- insert:\n    - config:\n        serverName: kopitiam\n",
+                                              encoding="utf-8")
+    monkeypatch.setattr(dsh, "profiles_dir", lambda: home / "profiles")
+    assert cli.main(["setup", "dsh"]) == 0
+    assert "web profile 会自动重新加载" in capsys.readouterr().out  # 第一次装
+    assert cli.main(["setup", "dsh"]) == 0
+    assert "web profile 会自动重新加载" in capsys.readouterr().out  # 同一个版本再装一次
+    (profile / dsh.installed_name()).rename(profile / "kopitiam-wake-00000000.mjs")
+    assert cli.main(["setup", "dsh"]) == 0
+    assert "要重开 dsh 才生效" in capsys.readouterr().out  # 换掉了以前装的版本
+
+
 def test_dsh_adapter_wakes_the_session_of_that_identity(home):
     from kopitiam.wake import dsh
 

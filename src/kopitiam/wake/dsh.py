@@ -87,8 +87,9 @@ def _strip(text: str) -> str:
 
 
 def installed_name() -> str:
-    """装进 profile 的插件文件名带上内容的哈希。dsh 用 import() 加载插件，同一个路径拿到的是缓存里的旧模块；
-    插件一改路径就变，web profile 热加载时才会真的换成新插件，不用重开 dsh。"""
+    """装进 profile 的插件文件名带上内容的哈希。dsh 用 import() 加载插件，同一个路径拿到的是缓存里的旧模块，
+    换了路径才不会用到旧版本。不过实测（dsh 0.2）web profile 热加载只换 MCP 配置，不会重新加载插件，
+    所以更新插件以后还是要重开 dsh。"""
     return f"kopitiam-wake-{hashlib.sha256(PLUGIN.read_bytes()).hexdigest()[:8]}.mjs"
 
 

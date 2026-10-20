@@ -148,11 +148,14 @@ def _run_setup_dsh(args) -> int:
         print(f"错误：{base} 下没有配了 kopitiam MCP 的 dsh profile。先按 README 把 kopitiam 接进 dsh，"
               "或者用 --profile 指定。", file=sys.stderr)
         return 1
+    updated = False  # 换掉了以前装的另一个版本：dsh 要重开才会用新插件
     for profile in profiles:
         if args.print_only:
             print(f"会把插件复制到 {profile / dsh.installed_name()}，并在 {profile / 'cordis.patch.yml'} 末尾加：\n"
                   + dsh.patch_block(profile / dsh.installed_name()))
             continue
+        before = {p.name for p in profile.glob("kopitiam-wake*.mjs")}
+        updated |= bool(before) and dsh.installed_name() not in before
         try:
             dsh.install(profile, remove=args.remove)
         except OSError as e:
@@ -161,8 +164,10 @@ def _run_setup_dsh(args) -> int:
         print(f"{'已删除' if args.remove else '已安装'}：{profile.name} profile"
               f"（{profile / 'cordis.patch.yml'}，原文件备份成 cordis.patch.yml.bak-kopitiam）")
     if not args.remove and not args.print_only:
-        print("web profile 会自动重新加载；别的 profile 要重开 dsh。\n"
-              "然后每个会话先用一次 kopitiam（比如让它调用 whoami），就有了自己的身份。")
+        print("插件换成了新版本，要重开 dsh 才生效（热加载换不掉已经加载的插件）。\n" if updated else
+              "web profile 会自动重新加载；别的 profile 要重开 dsh。\n",
+              end="")
+        print("然后每个会话先用一次 kopitiam（比如让它调用 whoami），就有了自己的身份。")
     return 0
 
 

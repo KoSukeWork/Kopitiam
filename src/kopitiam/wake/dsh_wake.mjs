@@ -1,6 +1,6 @@
 /**
  * kopitiam：dsh 这一边的插件（cordis）。
- * 由 `kopitiam setup dsh` 复制到 ~/.dsh/profiles/<profile>/kopitiam-wake.mjs，并写进那个 profile 的 cordis.patch.yml。
+ * 由 `kopitiam setup dsh` 复制到 ~/.dsh/profiles/<profile>/kopitiam-wake-<哈希>.mjs，并写进那个 profile 的 cordis.patch.yml。
  * 文件都在 <KOPITIAM_HOME 或 ~/.kopitiam>/wake/ 里，用 dsh 的进程号区分（kopitiam 的 MCP 进程也是 dsh 启动的，对得上）。
  *
  * - 哪个会话在调用：一个 dsh 进程管着好几个会话，却只有一个 kopitiam MCP 进程，dsh 调用 MCP 工具时也不带会话信息。

@@ -186,7 +186,7 @@ kopitiam setup dsh --profile web   # 指定 profile（可以写多次）
 kopitiam setup dsh --remove        # 删掉
 ```
 
-它把插件复制到 `~/.dsh/profiles/<profile>/kopitiam-wake-<哈希>.mjs`（文件名带内容的哈希：dsh 用 `import()` 加载插件，同一个路径会一直用缓存里的旧版本），并在那个 profile 的 `cordis.patch.yml` 末尾加一段 `- insert:`（前后有 `# >>> kopitiam 自动唤醒` / `# <<< kopitiam 自动唤醒` 标记行，`--remove` 整段删掉，别的内容不动）。web profile 默认 `patchReload: live`，改完自动重新加载；别的 profile 要重开 dsh。然后每个会话先用一次 kopitiam（比如让它调用 `whoami`），就有了自己的身份。
+它把插件复制到 `~/.dsh/profiles/<profile>/kopitiam-wake-<哈希>.mjs`（文件名带内容的哈希：dsh 用 `import()` 加载插件，同一个路径会一直用缓存里的旧版本，换了文件名才不会用到旧的），并在那个 profile 的 `cordis.patch.yml` 末尾加一段 `- insert:`（前后有 `# >>> kopitiam 自动唤醒` / `# <<< kopitiam 自动唤醒` 标记行，`--remove` 整段删掉，别的内容不动）。web profile 默认 `patchReload: live`，改完自动重新加载；别的 profile 要重开 dsh。然后每个会话先用一次 kopitiam（比如让它调用 `whoami`），就有了自己的身份。
 
 > 以前装过插件的，更新 kopitiam 以后要再运行一次 `kopitiam setup dsh`，然后**重开 dsh**：插件是复制过去的，不会自己更新；而且实测（dsh 0.2）热加载能换掉 MCP 的配置，换不掉已经加载的插件。
 
@@ -286,8 +286,8 @@ uv run pytest    # 跑全部测试
 
 ## 已知限制
 
-- **身份可能互换**：在同一个文件夹里开两个同类 agent 的话，重启后它们可能会互相拿到对方的名字。需要固定名字时用 `--name`。
-- **Codex 的新对话要先用一次 kopitiam**：Codex 启动 MCP 进程时不告诉它是哪个对话，要等第一次调用工具（带着对话 ID）才知道。所以新对话在那之前不会出现在成员列表里，也叫不醒。
+- **身份可能互换**：在同一个文件夹里开两个 Claude Code（或两个 pi）的话，重启后它们可能会互相拿到对方的名字。需要固定名字时用 `--name`。Codex、dsh 按对话（会话）ID 认身份，不会互换。
+- **Codex、dsh 的新对话（会话）要先用一次 kopitiam**：启动 MCP 进程时不知道是哪个对话，要等第一次调用工具（Codex 带着对话 ID，dsh 靠插件写下会话 ID）才知道。所以新对话在那之前不会出现在成员列表里，也叫不醒。
 - **遮盖不保证完全**：`export_context` 会用正则遮盖常见的密钥/token，但只是尽量，不能保证全部遮住。导出文件发给别人/别的 agent 之前先扫一眼。
 - **网页只给本机用**：网页只监听 127.0.0.1 且校验 token；跨电脑只有「团队」里人和人之间的消息，走单独的团队端口，不能远程打开别人的网页。聊天内容明文存在本机 SQLite 里，团队消息在网络上也是明文（见「团队」）。
 - **团队暂不支持**：IPv6 地址、局域网自动发现（要手动输入 IP）、群聊（发给多个同事是分别投递）、agent 直接发给同事。
