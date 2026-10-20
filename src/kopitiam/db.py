@@ -377,16 +377,19 @@ def claim(kind: str, cwd: str | None = None, *, name: str | None = None,
                 return agent_id
 
             # 没给 name：找 kind 相同、launch_cwd 相同、能用的行（离线，或正被同一个 agent 占着）；
-            # 绑了对话的是那个对话专用的（claim_thread），不拿
+            # 绑了对话的是那个对话专用的（claim_thread），不拿。
+            # 同一个 agent 正占着的优先，其次是最早建的：多开过一次留下的 claude@X-2 最近用过，
+            # 但以后单独启动时应该认领回 claude@X
             candidates = c.execute(
-                "SELECT * FROM agents WHERE kind=? AND thread_id IS NULL ORDER BY last_seen DESC", (kind,)
+                "SELECT * FROM agents WHERE kind=? AND thread_id IS NULL ORDER BY id", (kind,)
             ).fetchall()
-            for cand in sorted(candidates, key=lambda r: not _same_host(r, pid)):  # 同一个 agent 的优先
+            for cand in sorted(candidates, key=lambda r: not _same_host(r, pid)):
                 if norm(cand["launch_cwd"]) == norm(cwd) and _usable(cand, pid):
                     c.execute(
                         "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, archived_at=NULL, trashed_at=NULL WHERE id=?",
                         (pid, pid_ctime, now_iso(), cand["id"]),
                     )
+                    _drop_spare_names(c, cand["name"], cand["id"])
                     c.execute("COMMIT")
                     return int(cand["id"])
             # 找不到：新建，名字用 kind@目录名，重名加 -2、-3

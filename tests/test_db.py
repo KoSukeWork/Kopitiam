@@ -200,6 +200,31 @@ def test_claiming_base_name_drops_spare_suffix_rows(home):
     assert "myXbot-2" in names
 
 
+def test_claim_prefers_the_original_identity_over_a_spare(home):
+    # 多开过一次留下 claude@Proj-2（最近用过）；以后单独启动时要认领回 claude@Proj
+    proj = str(home / "Proj")
+    a = db.claim("claude", cwd=proj, pid=os.getpid())
+    b = db.claim("claude", cwd=proj, pid=os.getppid())  # 同时开着另一个 → claude@Proj-2
+    db.release(a)
+    db.release(b)
+    with db._conn() as c:
+        c.execute("UPDATE agents SET last_seen='2099-01-01T00:00:00' WHERE id=?", (b,))
+    assert db.claim("claude", cwd=proj, pid=os.getpid()) == a
+    with db._conn() as c:
+        names = {r[0] for r in c.execute("SELECT name FROM agents WHERE kind='claude'")}
+    assert names == {"claude@Proj"}  # 离线、没消息的 -2 清掉
+
+    # -2 有消息的话留着，但还是认领回原来的
+    b = db.claim("claude", cwd=proj, pid=os.getppid())
+    db.Chat().send(b, "我是 -2")
+    db.release(a)
+    db.release(b)
+    assert db.claim("claude", cwd=proj, pid=os.getpid()) == a
+    with db._conn() as c:
+        names = {r[0] for r in c.execute("SELECT name FROM agents WHERE kind='claude'")}
+    assert names == {"claude@Proj", "claude@Proj-2"}
+
+
 def test_host_pid_is_a_live_ancestor():
     import psutil
 
