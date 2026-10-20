@@ -26,14 +26,28 @@ SEND_BODY_MAX = 1024 * 1024
 
 
 class _WebServer(ThreadingHTTPServer):
-    peer_service: peer.PeerService
+    peer_service: peer.PeerService | None = None
     wake_service: WakeService | None = None
 
     def server_close(self) -> None:  # 网页关掉时，团队端口、后台投递线程、自动唤醒一起停
         super().server_close()
-        self.peer_service.stop()
+        # 端口被占用时 socketserver 在构造函数里就调用这里，那时还没有 peer_service
+        if self.peer_service:
+            self.peer_service.stop()
         if self.wake_service:
             self.wake_service.stop()
+
+
+def _port_owner(port: int) -> str:
+    """占着这个端口的程序（「Clash.exe，进程号 123」），查不到就是空字符串。"""
+    try:
+        import psutil
+        for c in psutil.net_connections("tcp"):
+            if c.laddr and c.laddr.port == port and c.status == psutil.CONN_LISTEN and c.pid:
+                return f"{psutil.Process(c.pid).name()}，进程号 {c.pid}"
+    except Exception:
+        pass
+    return ""
 
 
 def make_server(port: int = 8765, *, peer_host: str = "0.0.0.0", peer_port: int = PEER_PORT,
@@ -61,7 +75,8 @@ def make_server(port: int = 8765, *, peer_host: str = "0.0.0.0", peer_port: int 
     try:
         srv = _WebServer(("127.0.0.1", port), Handler)
     except OSError as e:
-        raise SystemExit(f"错误：端口 {port} 被占用（{e}）。换一个端口：kopitiam web --port 8770")
+        owner = _port_owner(port)
+        raise SystemExit(f"错误：端口 {port} 被占用（{owner or e}）。换一个端口：kopitiam web --port 8770")
     srv.peer_service = service
     if share if share is not None else db.get_meta("share") == "1":
         try:

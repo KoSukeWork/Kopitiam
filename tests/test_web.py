@@ -202,3 +202,17 @@ def test_hidden_forget_and_history_endpoints(server):
     code, body = _post(base + "/api/forget", json.dumps({"name": "empty"}).encode("utf-8"), h)
     assert json.loads(body)["ok"] is True
     assert _post(base + "/api/forget", b"{}")[0] == 403  # 要 token
+
+
+def test_port_in_use_gives_a_clear_error(home):
+    import socket
+
+    busy = socket.socket()
+    busy.bind(("127.0.0.1", 0))
+    busy.listen()
+    try:
+        with pytest.raises(SystemExit) as e:  # 以前在这里先崩出 AttributeError，看不到真正的原因
+            web.make_server(busy.getsockname()[1])
+        assert "被占用" in str(e.value) and "--port" in str(e.value)
+    finally:
+        busy.close()
