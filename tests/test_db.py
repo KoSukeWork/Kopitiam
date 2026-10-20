@@ -237,6 +237,10 @@ def test_claim_thread_one_identity_per_conversation(home):
 
     db.Chat().rename(a, "主对话")
     assert db.claim_thread("codex", "t-1", proj, pid=os.getpid()) == a  # 改过的名字跟着对话
+    shared = db.claim("codex", cwd=other, name="codex", pid=os.getpid())  # 以前共用的身份，最近用过它的是 t-9
+    db.set_thread(shared, "t-9")
+    assert db.claim_thread("codex", "t-9", proj, pid=os.getpid()) == shared
+    assert f"工作目录 {proj}）" in db.Chat().whoami(shared)  # 工作目录改成这个对话的
     # 不按对话认领时（没有对话 ID 的旧版 Codex），不会拿走绑了对话的身份
     d = db.claim("codex", cwd=proj, pid=os.getpid())
     assert d not in (a, b)

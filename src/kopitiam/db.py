@@ -451,8 +451,9 @@ def claim_thread(kind: str, thread_id: str, cwd: str, *, pid: int | None = None,
             row = c.execute("SELECT * FROM agents WHERE kind=? AND thread_id=? ORDER BY last_seen DESC",
                             (kind, thread_id)).fetchone()
             if row is not None:
-                c.execute("UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, host=? WHERE id=?",
-                          (pid, pid_ctime, now_iso(), host, row["id"]))
+                # 工作目录跟着对话（以前共用一个身份时记的是别的对话的目录）
+                c.execute("UPDATE agents SET cwd=?, pid=?, pid_ctime=?, last_seen=?, host=? WHERE id=?",
+                          (cwd, pid, pid_ctime, now_iso(), host, row["id"]))
                 c.execute("COMMIT")
                 return int(row["id"])
             base = f"{kind}@{Path(cwd).name or 'root'}"

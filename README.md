@@ -56,7 +56,7 @@ args = ["mcp", "--kind", "codex"]
 startup_timeout_sec = 30
 ```
 
-> **一个对话一个身份**：Codex 每次调用 kopitiam 的工具都会带上当前对话的 ID（`_meta.threadId`），kopitiam 按它给每个对话一个身份。名字按那个对话的项目文件夹取（从对话记录里读），比如 `codex@Client`；同一个文件夹的第二个对话叫 `codex@Client-2`。网页成员列表和 `who` 会附上对话标题（从 `~/.codex/session_index.jsonl` 读），方便区分。
+> **一个对话一个身份**：Codex 每次调用 kopitiam 的工具都会带上当前对话的 ID（`_meta.threadId`），kopitiam 按它给每个对话一个身份。名字按那个对话的项目文件夹取（从对话记录里读），比如 `codex@Client`；同一个文件夹的第二个对话叫 `codex@Client-2`。网页成员列表和 `who` 会附上对话标题（从 `~/.codex/session_index.jsonl` 读），方便区分。在桌面版 26.1013 上验证过：改配置以后新加载的对话会用新配置；两个对话各自认领身份，发给 `codex@w` 的消息只叫醒那个对话，另一个对话不动。
 > - 对话要**先调用一次 kopitiam**（比如 `whoami`）才会出现：Codex 是按对话启动 MCP 进程的，但启动时不告诉它是哪个对话。之后这个对话一直用这个身份，`rename` 改过的名字也跟着它。
 > - 桌面版开着，它的对话身份就都算在线：闲着、没加载的对话也叫得醒（见「自动唤醒 → Codex 桌面版」）。桌面版重开以后，7 天内用过 kopitiam 的对话身份会自动接上，不用每个对话再调用一次。
 > - 想让所有对话共用一个身份（以前的用法），在 `args` 里加 `"--name", "codex"`。这时自动唤醒只交给最近一次调用 kopitiam 的那个对话。从共用身份改过来时：原来的 `codex` 身份留给最近用过它的那个对话，其他对话各自新建。
