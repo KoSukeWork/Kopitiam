@@ -67,7 +67,9 @@ def _me() -> int:
     global _ME, _THREAD
     tid = _request_thread()
     if tid and _per_thread():
-        if tid not in _BY_THREAD or (_HOST_TAG == "codex-daemon" and not _online(_BY_THREAD[tid])):
+        row = _row(_BY_THREAD[tid]) if tid in _BY_THREAD else None
+        # 第一次用；身份在回收站里被永久删除了；daemon 托管的、记下的命令行窗口关了（重开过窗口）：重新认领
+        if row is None or (_HOST_TAG == "codex-daemon" and not db.is_online(row)):
             cwd = _thread_cwd(tid)
             pid = _HOST
             if _HOST_TAG == "codex-daemon":
@@ -77,8 +79,9 @@ def _me() -> int:
                 pid = cli_window([cwd, os.getcwd()]) or os.getpid()
             _BY_THREAD[tid] = db.claim_thread(_KIND, tid, cwd, pid=pid, host=_HOST_TAG)
         return _BY_THREAD[tid]
-    if _ME is None:
+    if _ME is None or _row(_ME) is None:  # 第一次用，或者身份在回收站里被永久删除了
         _ME = db.claim(kind=_KIND, cwd=os.getcwd(), name=_NAME, pid=_HOST)
+        _THREAD = None  # 新身份还没记对话
     if tid and tid != _THREAD:
         # 共用一个身份：记下最近用过 kopitiam 的对话，自动唤醒和导出记录时用
         db.set_thread(_ME, tid)
@@ -86,10 +89,9 @@ def _me() -> int:
     return _ME
 
 
-def _online(agent_id: int) -> bool:
+def _row(agent_id: int):
     with closing(db.connect()) as c:
-        row = c.execute("SELECT * FROM agents WHERE id=?", (agent_id,)).fetchone()
-    return row is not None and db.is_online(row)
+        return c.execute("SELECT * FROM agents WHERE id=?", (agent_id,)).fetchone()
 
 
 def _call(fn, *args, **kwargs) -> str:

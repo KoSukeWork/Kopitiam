@@ -6,7 +6,7 @@
    （消息照常送到）。用户对其中任何一个说话、或者两个 agent 之间 WAKE_CHAIN_IDLE 没说话，就重新计数。
 3. 叫醒以后，它读到那一批之前，再来新消息不重复叫。但如果 agent 换了进程（重开过）、或者过了 WAKE_RETRY
    还没读，说明那次多半没送到，就从没读的地方再交一次（接收端按叫醒编号去重）。
-4. 没开着的、用户归档了的 agent 不管；暂停期间和刚开始感知时的旧消息不补叫。
+4. 没开着的、用户归档了或者放进回收站的 agent 不管；暂停期间和刚开始感知时的旧消息不补叫。
 """
 from __future__ import annotations
 
@@ -141,8 +141,8 @@ def scan(check: Callable[[dict], str | None]) -> list[WakeCall]:
                 if start >= top:
                     continue
                 c.execute("UPDATE wake_state SET seen_upto=? WHERE agent_id=?", (top, a["id"]))
-                if stop or not a["enabled"] or a["archived_at"] or not db.is_online(a):
-                    continue  # 这期间的消息以后也不补叫（归档的也不叫）
+                if stop or not a["enabled"] or a["archived_at"] or a["trashed_at"] or not db.is_online(a):
+                    continue  # 这期间的消息以后也不补叫（归档的、在回收站里的也不叫）
                 rows = c.execute(
                     "SELECT id, sender_id, to_ids FROM messages WHERE id > ? AND sender_id <> ? ORDER BY id",
                     (start, a["id"]),

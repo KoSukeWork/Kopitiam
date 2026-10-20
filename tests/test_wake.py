@@ -1128,3 +1128,82 @@ def test_archived_agent_is_hidden_and_not_woken_until_it_comes_back(home):
     Chat().whoami(c)  # 调用任何工具都算在用
     assert "codex@Client" in Chat().who()
     assert Chat().archive("user").startswith("错误：")
+
+
+def test_trash_deletes_agent_with_its_messages_after_30_days(home):
+    from kopitiam.config import files_dir
+
+    db.init_db()
+    user = db.user_id()
+    old = db.claim("codex", cwd=str(home), name="old", pid=os.getpid())
+    b = db.claim("claude", cwd=str(home), name="b", pid=os.getpid())
+    src = home / "plan.md"
+    src.write_text("计划", encoding="utf-8")
+    own = _send(old, "user", "它发的")
+    Chat().send(old, "带附件", ["user"], [str(src)])
+    with_file = max(int(r["id"]) for r in Chat().messages_after(0))
+    shared = Chat().messages_after(0)[-1]["files"][0]["path"]
+    Chat().forward(user, with_file, ["b"])  # 转发和原消息共用同一个附件文件
+    Chat().send(old, "另一个附件", ["user"], [str(src)])
+    alone_file = Chat().messages_after(0)[-1]["files"][0]["path"]
+    only = _send(user, "old", "只发给它")
+    both = _send(user, ["old", "b"], "发给两个")
+    _send(user, "all", "广播")
+
+    assert Chat().trash("old").startswith("已移到回收站：old")
+    assert "old" not in Chat().who()
+    assert "old 在回收站：消息会保存，但不会叫醒它" in Chat().send(user, "还在吗", ["old"])
+    assert db.purge_stale() == 0  # 还没到 30 天
+
+    with closing(db.connect()) as c:
+        c.execute("UPDATE agents SET trashed_at='2020-01-01T00:00:00' WHERE id=?", (old,))
+    assert db.purge_stale() == 1
+    with closing(db.connect()) as c:
+        names = {r[0] for r in c.execute("SELECT name FROM agents")}
+        left = {r["id"]: r for r in c.execute("SELECT * FROM messages")}
+    assert "old" not in names
+    assert own not in left and only not in left and with_file not in left  # 它发的、只发给它的删掉
+    assert json.loads(left[both]["to_ids"]) == [b]  # 同时发给别人的留下，收件人去掉它
+    assert any(m["text"] == "广播" for m in left.values())
+    assert Path(shared).exists()  # 转发的消息还在用
+    assert not Path(alone_file).exists() and Path(alone_file).parent == files_dir()
+
+
+def test_trash_restore_purge_now_and_restore_on_use(home):
+    db.init_db()
+    a = db.claim("codex", cwd=str(home), name="a", pid=os.getpid())
+    _send(a, "user", "hi")
+    assert Chat().purge("a").startswith("错误：")  # 不在回收站里不能永久删除
+    Chat().trash("a")
+    assert Chat().trash("a", False) == "已从回收站恢复 a"
+    Chat().trash("a")
+    Chat().whoami(a)  # 它自己又用 kopitiam 了
+    assert "a" in Chat().who()
+    Chat().trash("a")
+    assert Chat().purge("a") == "已永久删除 a"
+    with closing(db.connect()) as c:
+        assert c.execute("SELECT COUNT(*) FROM agents WHERE name='a'").fetchone()[0] == 0
+        assert c.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+
+
+def test_mcp_reclaims_after_its_identity_was_deleted(home, monkeypatch):
+    import anyio
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from kopitiam import mcp_server
+    from kopitiam.wake import codex
+
+    monkeypatch.setattr(codex, "hosted_by_desktop", lambda pid: True)
+    mcp_server.start("codex")
+
+    async def whoami():
+        async with create_connected_server_and_client_session(mcp_server.mcp) as client:
+            r = await client.call_tool("whoami", {}, meta={"threadId": "t-1"})
+            return r.content[0].text
+
+    first = anyio.run(whoami)
+    name = first.split("你是 ")[1].split("（")[0]
+    Chat().trash(name)
+    Chat().purge(name)  # 回收站里永久删了，可这个对话还开着
+    again = anyio.run(whoami)
+    assert again.startswith(f"你是 {name}（")  # 重新认领了一个身份，不报错

@@ -239,7 +239,7 @@ class _Handler(BaseHTTPRequestHandler):
         "/api/wake/agent": _w_agent,
     }
 
-    # ---- 归档：手动把 agent 收进「已归档 / 隐藏」，或者放回列表 ----
+    # ---- 归档、回收站：手动把 agent 收进「已归档 / 隐藏」、放进回收站，或者放回去 ----
 
     def _a_archive(self, data: dict) -> dict:
         out = Chat().archive(str(data.get("name") or ""), bool(data.get("archived", True)))
@@ -247,7 +247,19 @@ class _Handler(BaseHTTPRequestHandler):
             raise ValueError(out[len("错误："):])
         return {"message": out}
 
-    _AGENT_POSTS = {"/api/archive": _a_archive}
+    def _a_trash(self, data: dict) -> dict:
+        out = Chat().trash(str(data.get("name") or ""), bool(data.get("trashed", True)))
+        if out.startswith("错误："):
+            raise ValueError(out[len("错误："):])
+        return {"message": out}
+
+    def _a_purge(self, data: dict) -> dict:
+        out = Chat().purge(str(data.get("name") or ""))
+        if out.startswith("错误："):
+            raise ValueError(out[len("错误："):])
+        return {"message": out}
+
+    _AGENT_POSTS = {"/api/archive": _a_archive, "/api/trash": _a_trash, "/api/purge": _a_purge}
 
     # ---- 团队 ----
 
@@ -655,6 +667,9 @@ main.page > #convbar, main.page > #conn, main.page > #stream, main.page > #compo
 .acts .keep { font-size:12px; color:var(--muted); }
 .btn.danger { color:#e5484d; }
 .btn.danger:hover { border-color:#e5484d; }
+.hsec { max-width:860px; margin:22px auto 10px; display:flex; align-items:baseline; gap:10px; font-size:12px; font-weight:600; color:var(--muted); letter-spacing:.3px; }
+.hsec .note { font-weight:400; letter-spacing:0; }
+.hcard.trash { border-style:dashed; }
 .hempty { margin-top:16vh; text-align:center; font-size:13px; color:var(--muted); }
 .hidden-link { width:100%; display:flex; align-items:center; gap:8px; margin-top:10px; padding:9px 10px; border:0; border-top:1px solid var(--line); background:transparent; color:var(--muted); font-size:12px; font-weight:600; letter-spacing:.3px; cursor:pointer; }
 .hidden-link:hover { color:var(--ink-2); }
@@ -850,7 +865,7 @@ main.page > #convbar, main.page > #conn, main.page > #stream, main.page > #compo
   <section id="hiddenPage" hidden>
     <div class="pagebar">
       <button id="hiddenBack" class="btn"><span data-icon="back"></span>返回</button>
-      <div class="titles"><div class="ptitle">已归档 / 隐藏的 agent</div><div class="psub">你归档的、离线超过 7 天的都收在这里。归档的不会被叫醒，它自己再用 kopitiam 就会回到列表；超过 30 天没出现、又没有任何消息的会自动清理</div></div>
+      <div class="titles"><div class="ptitle">已归档 / 隐藏的 agent</div><div class="psub">你归档的、离线超过 7 天的都收在这里。归档的不会被叫醒，它自己再用 kopitiam 就会回到列表；有消息的可以移到回收站，30 天后连同消息一起删除</div></div>
     </div>
     <div id="hiddenList"></div>
   </section>
@@ -1342,15 +1357,7 @@ function renderAgents(agents) {
 }
 
 // ---- 「已归档 / 隐藏」子页面 ----
-async function setArchived(name, value) {
-  const out = await api("/api/archive", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, archived: value }),
-  });
-  if (!out.ok) { alert(out.message || "操作失败"); return; }
-  agentJson = "";
-  if (!$("hiddenPage").hidden) await loadHidden();
-  poll();
-}
+function setArchived(name, value) { return agentOp("/api/archive", { name, archived: value }); }
 
 async function openHidden() {
   closeSide();
@@ -1370,48 +1377,79 @@ async function loadHidden() {
   list.textContent = "";
   const agents = r.agents || [];
   if (!agents.length) { list.append(el("div", "hempty", "没有归档或隐藏的 agent")); return; }
-  for (const a of agents) list.append(hiddenCard(a));
+  const kept = agents.filter(a => !a.trashed_at), trash = agents.filter(a => a.trashed_at);
+  for (const a of kept) list.append(hiddenCard(a));
+  if (trash.length) {
+    const head = el("div", "hsec");
+    head.append(el("span", "", "回收站 · " + trash.length),
+      el("span", "note", "到期连同它发的、只发给它的消息一起删除；这期间消息照常显示，随时可以恢复"));
+    list.append(head);
+    for (const a of trash) list.append(hiddenCard(a));
+  }
+}
+
+// 归档 / 回收站 / 删除共用：发请求，失败弹提示，成功刷新子页面和成员列表
+async function agentOp(path, body, ask) {
+  if (ask && !confirm(ask)) return;
+  const out = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!out.ok) { alert(out.message || "操作失败"); return; }
+  agentJson = "";
+  if (!$("hiddenPage").hidden) await loadHidden();
+  if (path === "/api/purge") await reloadStream();  // 它的消息也删了，页面上已经显示的要拿掉
+  else poll();
+}
+
+// 消息流只会追加新消息；有消息被删掉时清空重新加载
+async function reloadStream() {
+  $("list").textContent = "";
+  known.clear();
+  lastId = 0;
+  booted = false;  // 重新加载的不播入场动画
+  await poll();
+  if (selected) await loadHistory(selected);
+}
+
+function opBtn(iconName, label, cls, onclick, title) {
+  const b = el("button", "btn" + (cls ? " " + cls : ""));
+  b.append(icon(iconName, 14), el("span", "", label));
+  if (title) b.title = title;
+  b.onclick = onclick;
+  return b;
 }
 
 function hiddenCard(a) {
-  const card = el("div", "hcard");
+  const card = el("div", "hcard" + (a.trashed_at ? " trash" : ""));
   const info = el("div", "info");
   const line1 = el("div", "line1");
   line1.append(el("span", "name", a.name), el("span", "kind", a.kind));
-  if (a.archived_at) line1.append(el("span", "kind", "已归档"));
+  if (a.trashed_at) line1.append(el("span", "kind", "回收站"));
+  else if (a.archived_at) line1.append(el("span", "kind", "已归档"));
+  const msgs = a.messages ? a.messages + " 条相关消息" : "没有消息";
+  const when = a.trashed_at ? "将于 " + fmtTime(a.purge_at) + " 删除"
+    : (a.archived_at ? "归档于 " + fmtTime(a.archived_at) + " · " : "") +
+      (a.online ? "在线" : "最后出现 " + fmtTime(a.last_seen) + " · " + a.ago);
   info.append(line1, el("div", "cwd", a.title ? a.title + " · " + a.cwd : a.cwd),
-    el("div", "hmeta", (a.archived_at ? "归档于 " + fmtTime(a.archived_at) + " · " : "") +
-      (a.online ? "在线" : "最后出现 " + fmtTime(a.last_seen) + " · " + a.ago) + " · " +
-      (a.messages ? a.messages + " 条相关消息" : "没有消息")));
+    el("div", "hmeta", when + " · " + msgs));
   const acts = el("div", "acts");
-  const view = el("button", "btn");
-  view.append(icon("chat", 14), el("span", "", "查看对话"));
-  view.onclick = () => select(a.name);
-  acts.append(view);
-  if (a.archived_at) {
-    const back = el("button", "btn");
-    back.append(icon("restore", 14), el("span", "", "恢复"));
-    back.title = "放回成员列表，恢复自动唤醒";
-    back.onclick = () => setArchived(a.name, false);
-    acts.append(back);
-  }
-  if (a.messages || a.online) {
-    // 删了历史消息就没有发送者名字了；在线的还在用这个身份
-    if (!a.archived_at) acts.append(el("span", "keep", "有消息，只隐藏"));
+  acts.append(opBtn("chat", "查看对话", "", () => select(a.name)));
+  if (a.trashed_at) {
+    acts.append(opBtn("restore", "恢复", "", () => agentOp("/api/trash", { name: a.name, trashed: false }),
+      "拿出回收站，放回原来的地方"));
+    acts.append(opBtn("trash", "永久删除", "danger", () => agentOp("/api/purge", { name: a.name },
+      "现在就永久删除 " + a.name + "？它发的、只发给它的消息会一起删除（" + msgs + "），不能恢复。")));
   } else {
-    const del = el("button", "btn danger");
-    del.append(icon("trash", 14), el("span", "", "删除"));
-    del.onclick = async () => {
-      if (!confirm("删除 " + a.name + "？它没有任何消息，删除后不能恢复。")) return;
-      const out = await api("/api/forget", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: a.name }),
-      });
-      if (!out.ok) alert(out.message || "删除失败");
-      agentJson = "";
-      await loadHidden();
-      poll();
-    };
-    acts.append(del);
+    if (a.archived_at) {
+      acts.append(opBtn("restore", "恢复", "", () => setArchived(a.name, false), "放回成员列表，恢复自动唤醒"));
+    }
+    if (a.messages || a.online) {
+      // 有消息的直接删会丢掉历史里的发送者，在线的还在用这个身份：先进回收站，到期再删
+      acts.append(opBtn("trash", "移到回收站", "danger", () => agentOp("/api/trash", { name: a.name, trashed: true },
+        "把 " + a.name + " 移到回收站？30 天后连同它发的、只发给它的消息一起删除（" + msgs + "）。" +
+        "这期间随时可以恢复，它自己再用 kopitiam 也会自动恢复。")));
+    } else {
+      acts.append(opBtn("trash", "删除", "danger", () => agentOp("/api/forget", { name: a.name },
+        "删除 " + a.name + "？它没有任何消息，删除后不能恢复。")));
+    }
   }
   card.append(avatar(a.name, false, true), info, acts);
   return card;

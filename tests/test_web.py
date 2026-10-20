@@ -243,3 +243,26 @@ def test_archive_endpoint_moves_agent_to_hidden_and_back(server):
     assert not a["archived"] and not a["hidden"] and hidden == []
     out = json.loads(_post(base + "/api/archive", json.dumps({"name": "user"}).encode("utf-8"), h)[1])
     assert not out["ok"]  # 用户身份不能归档
+
+
+def test_trash_and_purge_endpoints(server):
+    import os
+
+    from kopitiam import db
+
+    srv, token, url = server
+    base, h = _base(srv), {"X-Token": token}
+    a = db.claim("codex", cwd=".", name="noisy", pid=os.getpid())
+    db.Chat().send(a, "测试消息", ["user"])
+
+    def post(path, body):
+        return json.loads(_post(base + path, json.dumps(body).encode("utf-8"), h)[1])
+
+    out = post("/api/trash", {"name": "noisy", "trashed": True})
+    assert out["ok"] and out["message"].startswith("已移到回收站：noisy")
+    hidden = {x["name"]: x for x in json.loads(_get(base + "/api/hidden", headers=h)[1])["agents"]}
+    assert hidden["noisy"]["trashed_at"] and hidden["noisy"]["purge_at"] > hidden["noisy"]["trashed_at"]
+    assert post("/api/purge", {"name": "noisy"})["ok"]
+    assert "noisy" not in {x["name"] for x in json.loads(_get(base + "/api/hidden", headers=h)[1])["agents"]}
+    assert not post("/api/purge", {"name": "user"})["ok"]
+    assert _post(base + "/api/trash", b"{}")[0] == 403  # 要 token

@@ -28,6 +28,7 @@ from .config import (
     PEER_ONLINE_WINDOW,
     PURGE_AFTER,
     TEXT_MAX,
+    TRASH_KEEP,
     WHO_WINDOW,
     data_dir,
     db_path,
@@ -37,7 +38,7 @@ from .config import (
     valid_name,
 )
 
-SCHEMA_VERSION = "7"  # 2：团队（peers / outbox / messages.remote_uid）；3：自动唤醒（wake_state）；4：agents.thread_id；5：wake_state.woken_pid；6：agents.host；7：agents.archived_at
+SCHEMA_VERSION = "8"  # 2：团队（peers / outbox / messages.remote_uid）；3：自动唤醒（wake_state）；4：agents.thread_id；5：wake_state.woken_pid；6：agents.host；7：agents.archived_at；8：agents.trashed_at
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -103,6 +104,8 @@ CREATE TABLE IF NOT EXISTS wake_state(
 #   （找不到窗口时记那个对话自己的 MCP 进程）。
 # agents.archived_at：用户在网页上手动归档的时间（空 = 没归档）。归档的身份收进「已归档 / 隐藏」子页面，
 #   不在 who 里列出、不叫醒、桌面版重开时不接上；消息照常保存。它自己再用 kopitiam（认领身份、调用工具）就自动恢复。
+# agents.trashed_at：移进回收站的时间（空 = 不在回收站）。和归档一样不显示、不叫醒；过了 TRASH_KEEP 连同它的消息
+#   一起删除（purge_stale）。这期间消息照常显示，可以恢复；它自己再用 kopitiam 也会自动恢复。
 # wake_state：自动唤醒的进度（只有感知模块读写，见 wake/detector.py）。seen_upto = 这个 id 及以前的消息
 #   已经判断过要不要叫醒；woken_upto = 最近一次叫醒时包含的最大消息 id（agent 读到这里之前不重复叫）；
 #   woken_pid = 那次叫醒交给的 agent 进程（agent 换了进程，说明那次多半没送到，可以再叫）；
@@ -144,10 +147,11 @@ def init_db() -> None:
         c.execute("BEGIN IMMEDIATE")
         try:
             # v1 → v2：messages 加 remote_uid 列；v3 → v4：agents 加 thread_id 列；v4 → v5：wake_state 加 woken_pid 列；
-            # v5 → v6：agents 加 host 列；v6 → v7：agents 加 archived_at 列（几个进程可能同时启动，重复加列的错误忽略）
+            # v5 → v6：agents 加 host 列；v6 → v7：agents 加 archived_at 列；v7 → v8：agents 加 trashed_at 列
+            # （几个进程可能同时启动，重复加列的错误忽略）
             for table, col, typ in (("messages", "remote_uid", "TEXT"), ("agents", "thread_id", "TEXT"),
                                     ("wake_state", "woken_pid", "INTEGER"), ("agents", "host", "TEXT"),
-                                    ("agents", "archived_at", "TEXT")):
+                                    ("agents", "archived_at", "TEXT"), ("agents", "trashed_at", "TEXT")):
                 if col not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
                     try:
                         c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
@@ -337,7 +341,8 @@ def claim(kind: str, cwd: str | None = None, *, name: str | None = None,
                 if row is not None and _usable(row, pid):
                     # 认领这一行：写 pid、pid_ctime、last_seen，kind 也更新
                     c.execute(
-                        "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, kind=?, archived_at=NULL WHERE id=?",
+                        "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, kind=?, archived_at=NULL, trashed_at=NULL"
+                        " WHERE id=?",
                         (pid, pid_ctime, now_iso(), kind, row["id"]),
                     )
                     _drop_spare_names(c, name, row["id"])
@@ -353,7 +358,8 @@ def claim(kind: str, cwd: str | None = None, *, name: str | None = None,
                             break
                         if _usable(alt, pid):
                             c.execute(
-                                "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, kind=?, archived_at=NULL WHERE id=?",
+                                "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, kind=?, archived_at=NULL,"
+                                " trashed_at=NULL WHERE id=?",
                                 (pid, pid_ctime, now_iso(), kind, alt["id"]),
                             )
                             c.execute("COMMIT")
@@ -373,7 +379,7 @@ def claim(kind: str, cwd: str | None = None, *, name: str | None = None,
             for cand in sorted(candidates, key=lambda r: not _same_host(r, pid)):  # 同一个 agent 的优先
                 if norm(cand["launch_cwd"]) == norm(cwd) and _usable(cand, pid):
                     c.execute(
-                        "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, archived_at=NULL WHERE id=?",
+                        "UPDATE agents SET pid=?, pid_ctime=?, last_seen=?, archived_at=NULL, trashed_at=NULL WHERE id=?",
                         (pid, pid_ctime, now_iso(), cand["id"]),
                     )
                     c.execute("COMMIT")
@@ -457,7 +463,8 @@ def claim_thread(kind: str, thread_id: str, cwd: str, *, pid: int | None = None,
                             (kind, thread_id)).fetchone()
             if row is not None:
                 # 工作目录跟着对话（以前共用一个身份时记的是别的对话的目录）
-                c.execute("UPDATE agents SET cwd=?, pid=?, pid_ctime=?, last_seen=?, host=?, archived_at=NULL WHERE id=?",
+                c.execute("UPDATE agents SET cwd=?, pid=?, pid_ctime=?, last_seen=?, host=?, archived_at=NULL,"
+                          " trashed_at=NULL WHERE id=?",
                           (cwd, pid, pid_ctime, now_iso(), host, row["id"]))
                 c.execute("COMMIT")
                 return int(row["id"])
@@ -470,7 +477,8 @@ def claim_thread(kind: str, thread_id: str, cwd: str, *, pid: int | None = None,
                 if old is not None and old["kind"] == kind and old["thread_id"] is None and not is_online(old):
                     if counts.get(old["id"]):
                         c.execute(
-                            "UPDATE agents SET thread_id=?, cwd=?, pid=?, pid_ctime=?, last_seen=?, host=?, archived_at=NULL"
+                            "UPDATE agents SET thread_id=?, cwd=?, pid=?, pid_ctime=?, last_seen=?, host=?, archived_at=NULL,"
+                            " trashed_at=NULL"
                             " WHERE id=?", (thread_id, cwd, pid, pid_ctime, now_iso(), host, old["id"]))
                         c.execute("COMMIT")
                         return int(old["id"])
@@ -492,7 +500,7 @@ def adopt(kind: str, host: str, pid: int | None = None) -> int:
 
     Codex 桌面版重开以后，对话要等加载了、再调用一次 kopitiam 才会重新认领身份；可桌面版开着，
     没加载的对话也叫得醒。所以桌面版一启动 MCP 进程，就先把 WHO_WINDOW 内用过的对话身份标成在线
-    （只改 pid，不算活动，不改 last_seen）。用户归档了的不接。
+    （只改 pid，不算活动，不改 last_seen）。用户归档了的、放进回收站的不接。
     """
     if pid is None:
         pid = host_pid()
@@ -503,7 +511,8 @@ def adopt(kind: str, host: str, pid: int | None = None) -> int:
         c.execute("BEGIN IMMEDIATE")
         try:
             for r in c.execute("SELECT * FROM agents WHERE kind=? AND host=? AND thread_id IS NOT NULL"
-                               " AND last_seen >= ? AND archived_at IS NULL", (kind, host, cutoff)).fetchall():
+                               " AND last_seen >= ? AND archived_at IS NULL AND trashed_at IS NULL",
+                               (kind, host, cutoff)).fetchall():
                 if not is_online(r):
                     c.execute("UPDATE agents SET pid=?, pid_ctime=? WHERE id=?", (pid, pid_ctime, r["id"]))
                     n += 1
@@ -534,7 +543,7 @@ def _is_hidden(row, cutoff: str, peer_agents: set[int] = frozenset()) -> bool:
     """
     if row["kind"] == "human":
         return False
-    if row["archived_at"]:
+    if row["archived_at"] or row["trashed_at"]:
         return True
     if row["kind"] == "remote":
         return row["id"] not in peer_agents
@@ -556,13 +565,61 @@ def _message_counts(c) -> dict[int, int]:
     return counts
 
 
-def purge_stale() -> int:
-    """删掉离线超过 PURGE_AFTER、而且没有任何消息关联的身份，返回删掉的个数。
+def _purge_at(trashed_at: str) -> str:
+    """回收站里的身份什么时候删除。"""
+    try:
+        when = datetime.fromisoformat(trashed_at) + timedelta(seconds=TRASH_KEEP)
+    except ValueError:
+        when = datetime.now()
+    return when.isoformat(timespec="seconds")
 
-    有消息关联的身份只隐藏不删：历史消息要靠它显示发送者名字（外键也不允许删）。
+
+def _delete_agent(c, agent_id: int) -> list[str]:
+    """连同消息一起删掉一个身份（回收站到期、或者用户在回收站里点「永久删除」），返回要删的附件文件。
+
+    它发的消息、只发给它的消息整条删掉；同时发给别人的只把它从收件人里去掉
+    （不能留下空的收件人列表：[] 表示发给所有人）。附件文件要等提交以后再删，
+    而且转发会和原消息共用同一个文件，还有别的消息在用的不删。
+    """
+    gone = [r[0] for r in c.execute("SELECT id FROM messages WHERE sender_id=?", (agent_id,))]
+    for r in c.execute("SELECT id, to_ids FROM messages WHERE to_ids <> '[]' AND sender_id <> ?",
+                       (agent_id,)).fetchall():  # 先读完再改，别边读边改同一张表
+        targets = Chat._targets(r["to_ids"])
+        if agent_id in targets:
+            rest = [i for i in targets if i != agent_id]
+            if rest:
+                c.execute("UPDATE messages SET to_ids=? WHERE id=?", (json.dumps(rest), r["id"]))
+            else:
+                gone.append(r["id"])
+    paths: list[str] = []
+    for mid in gone:
+        paths += [r[0] for r in c.execute("SELECT path FROM attachments WHERE message_id=?", (mid,))]
+        c.execute("DELETE FROM attachments WHERE message_id=?", (mid,))
+        c.execute("DELETE FROM outbox WHERE message_id=?", (mid,))
+        c.execute("DELETE FROM messages WHERE id=?", (mid,))
+    c.execute("DELETE FROM agents WHERE id=?", (agent_id,))
+    return [p for p in set(paths)
+            if c.execute("SELECT 1 FROM attachments WHERE path=?", (p,)).fetchone() is None]
+
+
+def _remove_files(paths: list[str]) -> None:
+    for p in paths:
+        try:
+            Path(p).unlink(missing_ok=True)
+        except OSError:
+            pass  # 文件正被打开之类：留着也不影响聊天记录
+
+
+def purge_stale() -> int:
+    """删掉离线超过 PURGE_AFTER、而且没有任何消息关联的身份，以及在回收站里放满 TRASH_KEEP 的身份
+    （连同它的消息），返回删掉的个数。
+
+    有消息关联的身份只隐藏不删：历史消息要靠它显示发送者名字（外键也不允许删）；要删得先放进回收站。
     改过名的身份一定发过改名广播，所以自定义名字不会被清理掉。
     """
     cutoff = _ago_cutoff(PURGE_AFTER)
+    trash_cutoff = _ago_cutoff(TRASH_KEEP)
+    files: list[str] = []
     with _conn() as c:
         c.execute("BEGIN IMMEDIATE")
         try:
@@ -575,11 +632,19 @@ def purge_stale() -> int:
                     if not counts.get(r["id"]) and r["id"] not in paired and not is_online(r)]
             for i in gone:
                 c.execute("DELETE FROM agents WHERE id=?", (i,))
+            # 回收站到期：在线也删（还在用的话，它一调用工具就已经自己恢复了）
+            trashed = [r[0] for r in c.execute(
+                "SELECT id FROM agents WHERE trashed_at IS NOT NULL AND trashed_at < ?"
+                " AND kind NOT IN ('human', 'remote')", (trash_cutoff,)).fetchall()]
+            for i in trashed:
+                if i not in gone:
+                    files += _delete_agent(c, i)
             c.execute("COMMIT")
         except BaseException:
             c.execute("ROLLBACK")
             raise
-    return len(gone)
+    _remove_files(files)
+    return len(set(gone) | set(trashed))
 
 
 # ---- 团队：配对过的别人的电脑（人和人之间互发消息，agent 不直接参与） ----
@@ -825,8 +890,8 @@ class Chat:
 
     @staticmethod
     def _touch(c, me: int) -> None:
-        # 自己又在用 kopitiam 了：归档的自动恢复
-        c.execute("UPDATE agents SET last_seen=?, archived_at=NULL WHERE id=?", (now_iso(), me))
+        # 自己又在用 kopitiam 了：归档的、在回收站里的都自动恢复
+        c.execute("UPDATE agents SET last_seen=?, archived_at=NULL, trashed_at=NULL WHERE id=?", (now_iso(), me))
 
     @staticmethod
     def _targets(to_ids_json: str) -> list[int]:
@@ -916,7 +981,8 @@ class Chat:
                         t = t.strip()
                         if not t:
                             continue
-                        row = c.execute("SELECT id, name, kind, archived_at FROM agents WHERE name=?", (t,)).fetchone()
+                        row = c.execute("SELECT id, name, kind, archived_at, trashed_at FROM agents WHERE name=?",
+                                        (t,)).fetchone()
                         if row is None:
                             raise _Fail(
                                 f'错误：找不到 "{t}"。现有：{_all_names(c)}'
@@ -934,8 +1000,10 @@ class Chat:
                             remote_peers.append(int(peer["id"]))
                         if row["id"] not in to_ids:
                             to_ids.append(int(row["id"]))
-                            if row["archived_at"]:
-                                archived.append(row["name"])
+                            if row["trashed_at"]:
+                                archived.append(f"{row['name']} 在回收站")
+                            elif row["archived_at"]:
+                                archived.append(f"{row['name']} 已归档")
 
                 # 6. 正文长度（放在写库之前，任何失败都不能有半截数据）
                 text = text or ""
@@ -1020,7 +1088,7 @@ class Chat:
         if remote_peers:
             out += "（发往别的电脑的部分会在后台投递）"
         if archived:
-            out += f"（{'、'.join(archived)} 已归档：消息会保存，但不会叫醒它）"
+            out += f"（{'、'.join(archived)}：消息会保存，但不会叫醒它）"
         return out
 
     # ---- 转发（网页用）：把一条消息转给别人，标明原发送者和来源 ----
@@ -1233,7 +1301,8 @@ class Chat:
                 "online": online,
                 "last_seen": r["last_seen"],
                 "archived": bool(r["archived_at"]),
-                "hidden": bool(r["archived_at"]) or (not online and _is_hidden(r, cutoff, set(peers))),
+                "trashed": bool(r["trashed_at"]),
+                "hidden": bool(r["archived_at"] or r["trashed_at"]) or (not online and _is_hidden(r, cutoff, set(peers))),
                 "peer_name": peer["name"] if peer is not None else None,
             })
         return out
@@ -1259,6 +1328,9 @@ class Chat:
                 "ago": _ago(r["last_seen"]),
                 "messages": counts.get(r["id"], 0),
                 "archived_at": r["archived_at"],
+                "trashed_at": r["trashed_at"],
+                # 回收站里的到这个时间删除（启动 MCP 或网页时清理）
+                "purge_at": _purge_at(r["trashed_at"]) if r["trashed_at"] else None,
                 "online": r["kind"] != "remote" and is_online(r),
             }
             for r in rows
@@ -1301,6 +1373,38 @@ class Chat:
                 return "错误：只能归档 agent（团队里的同事请解除配对）"
             c.execute("UPDATE agents SET archived_at=? WHERE id=?", (now_iso() if value else None, row["id"]))
         return f"已归档 {row['name']}" if value else f"已恢复 {row['name']}"
+
+    def trash(self, name: str, value: bool = True) -> str:
+        """网页上把 agent 放进回收站 / 从回收站拿出来（放回原来的地方：归档的还是归档）。"""
+        with _conn() as c:
+            row = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
+            if row is None:
+                return f'错误：找不到 "{name}"'
+            if row["kind"] in ("human", "remote"):
+                return "错误：只能删除 agent（团队里的同事请解除配对）"
+            c.execute("UPDATE agents SET trashed_at=? WHERE id=?", (now_iso() if value else None, row["id"]))
+        if value:
+            return f"已移到回收站：{row['name']}，{_fmt_time(_purge_at(now_iso()))} 以后连同它的消息一起删除"
+        return f"已从回收站恢复 {row['name']}"
+
+    def purge(self, name: str) -> str:
+        """回收站里点「永久删除」：现在就连同它的消息一起删掉。只删回收站里的。"""
+        with _conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                row = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
+                if row is None or not row["trashed_at"]:
+                    raise _Fail(f"错误：{name} 不在回收站里")
+                files = _delete_agent(c, row["id"])
+                c.execute("COMMIT")
+            except _Fail as e:
+                c.execute("ROLLBACK")
+                return str(e)
+            except BaseException:
+                c.execute("ROLLBACK")
+                raise
+        _remove_files(files)
+        return f"已永久删除 {row['name']}"
 
     def messages_after(self, after: int, limit: int = 200) -> list[dict]:
         """user 能看到所有消息（包括 agent 之间互发的）。"""
