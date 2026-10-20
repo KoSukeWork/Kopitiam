@@ -38,7 +38,7 @@ from .config import (
     valid_name,
 )
 
-SCHEMA_VERSION = "8"  # 2：团队（peers / outbox / messages.remote_uid）；3：自动唤醒（wake_state）；4：agents.thread_id；5：wake_state.woken_pid；6：agents.host；7：agents.archived_at；8：agents.trashed_at
+SCHEMA_VERSION = "9"  # 2：团队（peers / outbox / messages.remote_uid）；3：自动唤醒（wake_state）；4：agents.thread_id；5：wake_state.woken_pid；6：agents.host；7：agents.archived_at；8：agents.trashed_at；9：agents.title
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -98,8 +98,11 @@ CREATE TABLE IF NOT EXISTS wake_state(
 # agents.thread_id：这个身份对应的对话 ID（Codex 每次调用工具都在 _meta.threadId 里带上；其他 agent 为空）。
 #   Codex 一个对话一个身份（claim_thread），自动唤醒、导出记录都按它找对话；
 #   配置里给了固定名字（--name）时所有对话共用一个身份，这里记的是最近一次调用 kopitiam 的对话。
+# agents.title：对话标题（dsh 的插件每次调用都带上，见 wake/dsh_wake.mjs）。Codex 的不存，显示时从
+#   ~/.codex/session_index.jsonl 现查（见 _titles）。
 # agents.host：托管这个身份的是哪一类进程（目前只有 Codex 的对话身份记）：
 #   "codex-desktop" = 桌面版。桌面版开着，没加载的对话也叫得醒，所以它重开以后要把这些对话的身份重新接上（adopt）。
+#   "dsh" = dsh。dsh 开着就能叫醒它的任何会话，重开以后和桌面版一样接上。
 #   "codex-daemon" = 命令行用的共享 daemon。关了窗口它还会把对话留很久，所以 pid 记的是用户开着的命令行窗口
 #   （找不到窗口时记那个对话自己的 MCP 进程）。
 # agents.archived_at：用户在网页上手动归档的时间（空 = 没归档）。归档的身份收进「已归档 / 隐藏」子页面，
@@ -147,11 +150,13 @@ def init_db() -> None:
         c.execute("BEGIN IMMEDIATE")
         try:
             # v1 → v2：messages 加 remote_uid 列；v3 → v4：agents 加 thread_id 列；v4 → v5：wake_state 加 woken_pid 列；
-            # v5 → v6：agents 加 host 列；v6 → v7：agents 加 archived_at 列；v7 → v8：agents 加 trashed_at 列
+            # v5 → v6：agents 加 host 列；v6 → v7：agents 加 archived_at 列；v7 → v8：agents 加 trashed_at 列；
+            # v8 → v9：agents 加 title 列
             # （几个进程可能同时启动，重复加列的错误忽略）
             for table, col, typ in (("messages", "remote_uid", "TEXT"), ("agents", "thread_id", "TEXT"),
                                     ("wake_state", "woken_pid", "INTEGER"), ("agents", "host", "TEXT"),
-                                    ("agents", "archived_at", "TEXT"), ("agents", "trashed_at", "TEXT")):
+                                    ("agents", "archived_at", "TEXT"), ("agents", "trashed_at", "TEXT"),
+                                    ("agents", "title", "TEXT")):
                 if col not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
                     try:
                         c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
@@ -523,13 +528,23 @@ def adopt(kind: str, host: str, pid: int | None = None) -> int:
     return n
 
 
+def set_title(agent_id: int, title: str) -> None:
+    """记下对话标题（dsh 的会话标题，见 agents.title）。"""
+    with _conn() as c:
+        c.execute("UPDATE agents SET title=? WHERE id=?", (title, agent_id))
+
+
 def _titles(rows) -> dict[int, str]:
-    """Codex 身份对应的对话标题（agent id → 标题），给 who 和网页区分同一个文件夹里的几个对话。"""
-    if not any(r["kind"] == "codex" and r["thread_id"] for r in rows):
-        return {}
-    from .export.codex import thread_titles
-    titles = thread_titles()
-    return {r["id"]: titles[r["thread_id"]] for r in rows if r["kind"] == "codex" and r["thread_id"] in titles}
+    """对话标题（agent id → 标题），给 who 和网页区分同一个文件夹里的几个对话。
+
+    Codex 的从 ~/.codex/session_index.jsonl 现查（改名了也跟得上）；其他的（dsh）用记下的。
+    """
+    out = {r["id"]: r["title"] for r in rows if r["title"] and r["kind"] != "codex"}
+    if any(r["kind"] == "codex" and r["thread_id"] for r in rows):
+        from .export.codex import thread_titles
+        titles = thread_titles()
+        out |= {r["id"]: titles[r["thread_id"]] for r in rows if r["kind"] == "codex" and r["thread_id"] in titles}
+    return out
 
 
 def _ago_cutoff(seconds: int) -> str:
@@ -1259,12 +1274,15 @@ class Chat:
             except BaseException:
                 c.execute("ROLLBACK")
                 raise
-        if kind == "codex" and thread and not session_file:
-            # Codex 记下了正在用 kopitiam 的对话：直接用它的记录文件，不用按工作目录猜（也就不用先 set_cwd）
-            from .export import codex as codex_export
-            found = codex_export.find_by_thread(thread)
+        if kind in ("codex", "dsh") and thread and not session_file:
+            # 记下了正在用 kopitiam 的对话：直接用它的记录文件，不用按工作目录猜（也就不用先 set_cwd）
+            if kind == "codex":
+                from .export import codex as found_in
+            else:
+                from .export import dsh as found_in
+            found = found_in.find_by_thread(thread)
             if found:
-                session_file, cwd = str(found), codex_export.header_cwd(found) or cwd
+                session_file, cwd = str(found), found_in.header_cwd(found) or cwd
         try:
             out, stats = run_export(kind, cwd, name, mode=mode, session_file=session_file)
         except ExportError as e:

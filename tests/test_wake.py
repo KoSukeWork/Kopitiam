@@ -991,55 +991,108 @@ def test_dsh_install_appends_marked_block_and_removes_it(home):
     assert "''" in dsh.patch_block(Path("C:/it's/kopitiam-wake.mjs"))  # YAML 单引号要写两遍
 
 
-def test_dsh_adapter_uses_signal_file(home):
+def test_dsh_adapter_wakes_the_session_of_that_identity(home):
+    from kopitiam.wake import dsh
+
     db.init_db()
-    d = db.claim("dsh", cwd=str(home), name="dsh", pid=os.getpid())
+    d = db.claim_thread("dsh", "session-1", str(home / "Proj"), pid=os.getpid(), host="dsh")
+    shared = db.claim("dsh", cwd=str(home), name="dsh", pid=os.getpid())  # 以前共用的身份，还不知道会话
     _scan()
-    _send(db.user_id(), "dsh")
+    _send(db.user_id(), "dsh@Proj")
     assert service.run_once() == []
-    assert "kopitiam setup dsh" in _note(d)
+    assert "kopitiam setup dsh" in _note(d)  # 插件没装（插件一加载就建这个文件）
     sig = signals_path("dsh")
     sig.parent.mkdir(parents=True, exist_ok=True)
-    sig.write_text("", encoding="utf-8")  # 插件知道会话以后会建这个文件
-    m = _send(db.user_id(), "dsh", "看一下")
-    assert [(x.name, err) for x, err in service.run_once()] == [("dsh", None)]
-    assert json.loads(sig.read_text(encoding="utf-8"))["id"] == f"{d}-{m}"
+    sig.write_text("", encoding="utf-8")
+    m = _send(db.user_id(), "dsh@Proj", "看一下")
+    _send(db.user_id(), "dsh", "你呢")
+    assert [(x.name, err) for x, err in service.run_once()] == [("dsh@Proj", None)]
+    assert "还不知道该发给哪个会话" in _note(shared)
+    wake = sig.parent / f"dsh-{os.getpid()}.wake-{d}-{m}.json"  # 每次叫醒一个文件，写明发给哪个会话
+    assert json.loads(wake.read_text(encoding="utf-8")) == {
+        "id": f"{d}-{m}", "text": wake_text_for(["user"], 1), "session": "session-1"}
+    assert not list(sig.parent.glob("*.tmp"))
+
+
+def wake_text_for(senders, n):
+    return detector.wake_text(senders, n)
+
+
+def test_mcp_dsh_one_identity_per_session(home, monkeypatch):
+    import anyio
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from kopitiam import mcp_server
+
+    proj = home / "Client"
+    calling = wake_dir() / f"dsh-{db.host_pid()}.calling.json"
+    calling.parent.mkdir(parents=True, exist_ok=True)
+    assert mcp_server.start("dsh") is None  # 启动时还不知道是哪个会话
+
+    async def whoami(session, title=""):
+        # dsh 的插件在调用 kopitiam 之前写下是哪个会话
+        calling.write_text(json.dumps({"session": session, "cwd": str(proj), "title": title}), encoding="utf-8")
+        async with create_connected_server_and_client_session(mcp_server.mcp) as client:
+            r = await client.call_tool("whoami", {})
+        calling.unlink()
+        return r.content[0].text
+
+    assert anyio.run(whoami, "session-1").startswith("你是 dsh@Client（")
+    assert anyio.run(whoami, "session-2", "查材质").startswith("你是 dsh@Client-2（")
+    assert anyio.run(whoami, "session-1", "改名以后").startswith("你是 dsh@Client（")
+    who = Chat().who()
+    assert "（对话：查材质）" in who and "（对话：改名以后）" in who  # 标题跟着会话
+    with closing(db.connect()) as c:
+        rows = {r["thread_id"]: r for r in c.execute("SELECT * FROM agents WHERE kind='dsh'")}
+    assert set(rows) == {"session-1", "session-2"} and rows["session-1"]["host"] == "dsh"
 
 
 NODE_DRIVER = r"""
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 const { apply, inject, name } = await import(pathToFileURL(process.argv[2]).href);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const handlers = {}, disposers = [], prompts = [], warns = [];
+const handlers = {}, disposers = [], prompts = [], warns = [], seen = [];
 const ctx = {
   on: (event, fn) => { handlers[event] = fn; },
   effect: (fn) => { disposers.push(fn()); },
+  get: (key) => key === "sessionTitle" ? { get: (s) => ({ title: "标题-" + s.header.id }) } : undefined,
   logger: { warn: (m) => warns.push(m) },
   // 和 dsh 真的 SessionController.prompt 一样：第二个参数 signal 必填
   sessionController: { prompt: async (req, signal) => { signal.throwIfAborted(); prompts.push(req); return { accepted: true }; } },
 };
-apply(ctx);
 const dir = join(process.env.KOPITIAM_HOME, "wake");
-const signal = join(dir, `dsh-${process.pid}.signal`);
-const before = existsSync(signal);
-const passed = await handlers["tools/post-execute"](
-  { name: "mcp__kopitiam__whoami", agent: { session: { header: { id: "s-1" } } } }, {}, async () => "next");
-await handlers["tools/post-execute"]({ name: "read_file", agent: { session: { header: { id: "s-2" } } } }, {}, async () => "next");
-const after = existsSync(signal);
-writeFileSync(signal, JSON.stringify({ id: "5-9", text: "kopitiam：你有 1 条新消息" }));
+const prefix = `dsh-${process.pid}`;
+const calling = join(dir, `${prefix}.calling.json`);
+apply(ctx);
+const ready = existsSync(join(dir, `${prefix}.signal`));
+const call = (tool, id) => handlers["tools/execute"](
+  { name: tool, agent: { session: { header: { id, cwd: "C:\\proj" } } } },
+  async () => {
+    seen.push(existsSync(calling) ? JSON.parse(readFileSync(calling, "utf8")) : null);
+    await sleep(50);  // 调用期间别的会话来调用：要排队，不能把 calling 文件改掉
+    seen.push(existsSync(calling) ? JSON.parse(readFileSync(calling, "utf8")).session : null);
+    return "next-" + id;
+  });
+const results = await Promise.all([call("mcp__kopitiam__read", "s-1"), call("mcp__kopitiam__send", "s-2")]);
+const other = await call("read_file", "s-3");
+const left = existsSync(calling);
+const wake = join(dir, `${prefix}.wake-5-9.json`);
+writeFileSync(wake + ".tmp", JSON.stringify({ id: "5-9", text: "kopitiam：你有 1 条新消息", session: "s-2" }));
+renameSync(wake + ".tmp", wake);
 await sleep(500);
-writeFileSync(signal, JSON.stringify({ id: "5-9", text: "kopitiam：你有 1 条新消息" }));  // 同一次再触发
-await sleep(500);
+const consumed = !existsSync(wake);
+writeFileSync(join(dir, "dsh-1.wake-7-1.json"), JSON.stringify({ id: "7-1", text: "别的 dsh 的", session: "x" }));
+await sleep(300);
 disposers.forEach((d) => d());
-console.log(JSON.stringify({ name, inject, before, after, passed, prompts, warns,
-  remembered: readFileSync(join(dir, "dsh-session.txt"), "utf8"), removed: !existsSync(signal) }));
+console.log(JSON.stringify({ name, inject, ready, results, other, seen, left, consumed, prompts, warns,
+  removed: !existsSync(join(dir, `${prefix}.signal`)) }));
 """
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="需要 Node.js")
-def test_dsh_plugin_prompts_the_kopitiam_session(home):
+def test_dsh_plugin_tells_kopitiam_the_session_and_wakes_it(home):
     from kopitiam.wake import dsh
 
     driver = home / "driver.mjs"
@@ -1049,11 +1102,16 @@ def test_dsh_plugin_prompts_the_kopitiam_session(home):
     assert r.returncode == 0, r.stderr
     out = json.loads(r.stdout.strip().splitlines()[-1])
     assert out["name"] == "kopitiam-wake" and out["inject"] == ["sessionController"]
-    assert out["before"] is False and out["after"] is True  # 知道会话以后才算能叫醒
-    assert out["passed"] == "next"  # 不挡别的插件
-    assert out["remembered"] == "s-1"  # 只记调用 kopitiam 工具的会话
-    assert out["prompts"] == [{"requestId": "kopitiam-5-9", "sessionId": "s-1", "mode": "queue",
-                               "content": [{"type": "text", "text": "kopitiam：你有 1 条新消息"}]}]
+    assert out["ready"] is True  # 一加载就算装好了
+    assert out["results"] == ["next-s-1", "next-s-2"] and out["other"] == "next-s-3"  # 不挡调用
+    # 两个会话同时调用：排队，各自调用期间 calling 文件写的都是自己
+    assert out["seen"][:4] == [{"session": "s-1", "cwd": "C:\\proj", "title": "标题-s-1"}, "s-1",
+                               {"session": "s-2", "cwd": "C:\\proj", "title": "标题-s-2"}, "s-2"]
+    assert out["seen"][4:] == [None, None]  # 别的工具不写
+    assert out["left"] is False  # 调用完就删
+    assert out["consumed"] is True and out["prompts"] == [
+        {"requestId": "kopitiam-5-9", "sessionId": "s-2", "mode": "queue",
+         "content": [{"type": "text", "text": "kopitiam：你有 1 条新消息"}]}]  # 别的 dsh 进程的不管
     assert out["warns"] == [] and out["removed"] is True
 
 

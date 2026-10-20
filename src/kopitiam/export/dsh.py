@@ -44,6 +44,19 @@ def find_session(cwd: str, home: Path | None = None) -> Path | None:
     return find_by_cwd(root, PATTERN, _header_cwd, cwd)
 
 
+def find_by_thread(session_id: str, home: Path | None = None) -> Path | None:
+    """按会话 ID 找记录：~/.dsh/sessions/<工作目录>/<会话 ID>/session*.jsonl.zstd（会话 ID 就是那一层文件夹名）。"""
+    if not session_id or not all(ch.isalnum() or ch == "-" for ch in session_id):
+        return None
+    root = (home / ".dsh" / "sessions") if home else ROOT
+    hits = sorted(root.glob(f"*/{session_id}/session*.jsonl.zstd")) if root.is_dir() else []
+    return hits[-1] if hits else None
+
+
+def header_cwd(path: Path) -> str | None:
+    return _header_cwd(path)
+
+
 def _header_cwd(path: Path) -> str | None:
     lines = _text(path).splitlines()
     if not lines:

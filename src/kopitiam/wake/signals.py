@@ -74,6 +74,11 @@ def cleanup() -> None:
             pid = f.stem.rpartition("-")[2]
             if pid.isdigit() and not psutil.pid_exists(int(pid)):
                 f.unlink(missing_ok=True)
+        # dsh 插件的文件：dsh-<进程号>.calling.json、dsh-<进程号>.wake-<叫醒编号>.json（dsh 关了就没人处理了）
+        for f in list(d.glob("dsh-*.calling.json")) + list(d.glob("dsh-*.wake-*.json")):
+            pid = f.name[len("dsh-"):].partition(".")[0]
+            if pid.isdigit() and not psutil.pid_exists(int(pid)):
+                f.unlink(missing_ok=True)
         for f in (d / "taken").glob("*"):
             if time.time() - f.stat().st_mtime > TAKEN_MAX_AGE:
                 f.unlink(missing_ok=True)

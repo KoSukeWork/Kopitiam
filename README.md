@@ -83,7 +83,7 @@ startup_timeout_sec = 30
         serverName: kopitiam
         transport: stdio
         command: 'C:\Users\YOUR_USER\.local\bin\kopitiam.exe'
-        args: ["mcp", "--kind", "dsh", "--name", "dsh"]
+        args: ["mcp", "--kind", "dsh"]
         failOnStartupError: false
 ```
 
@@ -104,7 +104,8 @@ startup_timeout_sec = 30
 >   ```
 >
 > - 改完用 `dsh web --dump-config 2>&1 | Select-String 'not found|serverName'` 检查：没有 `not found`，并且每个 MCP 都有一行 `serverName: …`，就说明都加载上了。
-> - 加 `--name dsh` 的原因：dsh 网页版的 MCP 启动目录不跟着工作区走（名字会变成 `dsh@<启动目录>`），导出前要先 `set_cwd`。
+> - **一个会话一个身份**（要先装下面「自动唤醒 → dsh」的插件）：名字按会话的工作目录取，比如 `dsh@Client`，同一个文件夹的第二个会话叫 `dsh@Client-2`；网页成员列表和 `who` 会附上会话标题。会话要先调用一次 kopitiam（比如 `whoami`）才会出现；dsh 开着，它的会话身份就都在线（闲着的会话也叫得醒），dsh 重开以后 7 天内用过的会自动接上。`export_context` 按会话 ID 直接找记录，不用先 `set_cwd`。
+> - 想让所有会话共用一个身份（以前的用法），在 `args` 里加 `"--name", "dsh"`：自动唤醒交给最近一次调用 kopitiam 的那个会话。没装插件时 kopitiam 不知道是哪个会话，也只能这样用（导出前要先 `set_cwd`：dsh 网页版的 MCP 启动目录不跟着工作区走）。
 
 **pi**：`pi mcp list` 应显示 `kopitiam: connected, 8 tools (direct, global)`。`mcp.json` 里给 kopitiam 加上 `"exposure": "direct"`，模型就能直接看到工具；默认的 `codemode` 方式要先写脚本搜索才能找到。
 
@@ -185,11 +186,14 @@ kopitiam setup dsh --profile web   # 指定 profile（可以写多次）
 kopitiam setup dsh --remove        # 删掉
 ```
 
-它把插件复制到 `~/.dsh/profiles/<profile>/kopitiam-wake.mjs`，并在那个 profile 的 `cordis.patch.yml` 末尾加一段 `- insert:`（前后有 `# >>> kopitiam 自动唤醒` / `# <<< kopitiam 自动唤醒` 标记行，`--remove` 整段删掉，别的内容不动）。web profile 默认 `patchReload: live`，改完自动重新加载；别的 profile 要重开 dsh。然后在**要接收消息的那个会话**里先用一次 kopitiam（比如让它调用 `whoami`）。
+它把插件复制到 `~/.dsh/profiles/<profile>/kopitiam-wake.mjs`，并在那个 profile 的 `cordis.patch.yml` 末尾加一段 `- insert:`（前后有 `# >>> kopitiam 自动唤醒` / `# <<< kopitiam 自动唤醒` 标记行，`--remove` 整段删掉，别的内容不动）。web profile 默认 `patchReload: live`，改完自动重新加载；别的 profile 要重开 dsh。然后每个会话先用一次 kopitiam（比如让它调用 `whoami`），就有了自己的身份。
+
+> 以前装过插件的，更新 kopitiam 以后要再运行一次 `kopitiam setup dsh`：插件是复制过去的，不会自己更新。
 
 原理：
-- **哪个会话**：一个 dsh 进程管着好几个会话，插件在 `tools/post-execute` 事件里看到哪个会话调用了 `mcp__kopitiam__*` 工具，就记下它（也存进 `~/.kopitiam/wake/dsh-session.txt`，dsh 重开以后还能用）。
-- **怎么叫醒**：和 Claude、pi 一样用信号文件 `~/.kopitiam/wake/dsh-<dsh 进程号>.signal`（插件知道会话以后才建它）。插件读到提示，就调用 `sessionController.prompt`（dsh 网页发消息用的同一个接口，`mode: "queue"`）：会话闲着马上开始，正在忙就排在这一轮后面。`requestId` 用叫醒编号，dsh 保证同一个只收一次。
+- **哪个会话在调用**：一个 dsh 进程管着好几个会话，却只有一个 kopitiam MCP 进程，而且 dsh 调用 MCP 工具时只发工具名和参数，不带会话信息（参数在插件能碰到之前就冻结了，也塞不进去）。所以插件包住每次 `mcp__kopitiam__*` 调用（`tools/execute` 事件）：调用前把会话 ID、工作目录、标题写进 `~/.kopitiam/wake/dsh-<dsh 进程号>.calling.json`，调用完删掉；kopitiam 收到请求时读它认人。kopitiam 的调用在插件里排队、一次一个，几个会话同时调用也不会认错（kopitiam 的工具都是几毫秒的事）。
+- **怎么叫醒**：kopitiam 给要叫醒的会话写一个 `~/.kopitiam/wake/dsh-<dsh 进程号>.wake-<叫醒编号>.json`（写完才改成这个名字，不会读到半截）。插件读到就调用 `sessionController.prompt`（dsh 网页发消息用的同一个接口，`mode: "queue"`）发进那个会话，然后删掉文件：会话闲着马上开始，正在忙就排在这一轮后面。`requestId` 用叫醒编号，dsh 保证同一个只收一次。
+- 插件一加载就建 `~/.kopitiam/wake/dsh-<dsh 进程号>.signal`，它在 = 装好了插件。
 - 插件文件不在 dsh 的安装目录里，所以不 import dsh 的任何包，只用 Node 自带的模块和 dsh 注入的服务。
 
 **Codex 桌面版**：不用装任何东西。每个对话第一次用 kopitiam（比如让它调用 `whoami`）以后就有了自己的身份，发给这个身份的消息只叫醒这个对话。
@@ -268,7 +272,7 @@ uv run pytest    # 跑全部测试
 
 ## 旧身份：归档、隐藏、回收站和自动清理
 
-每多一个项目文件夹，没加 `--name` 的 agent 就会多一个身份（例如 `claude@Client`）；Codex 更是一个对话一个身份，而且桌面版开着时它们都算在线。时间长了会越攒越多。处理方式（时长在 `config.py` 的 `WHO_WINDOW` / `PURGE_AFTER` / `TRASH_KEEP`）：
+每多一个项目文件夹，没加 `--name` 的 agent 就会多一个身份（例如 `claude@Client`）；Codex、dsh 更是一个对话（会话）一个身份，而且 Codex 桌面版、dsh 开着时它们都算在线。时间长了会越攒越多。处理方式（时长在 `config.py` 的 `WHO_WINDOW` / `PURGE_AFTER` / `TRASH_KEEP`）：
 
 | 情况 | 处理 |
 |---|---|

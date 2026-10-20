@@ -31,24 +31,33 @@ _HOST_TAG: str | None = None  # 托管的是哪一类进程（见 agents.host）
 _ME: int | None = None  # 按进程认领的身份
 _THREAD: str | None = None  # 共用一个身份时：最近一次记下的对话 ID，没变就不重复写库
 _BY_THREAD: dict[str, int] = {}  # 一个对话一个身份时：对话 ID → agent id
+_TITLES: dict[str, str] = {}  # dsh：最近记下的会话标题，没变就不重复写库
 
 
 def _per_thread() -> bool:
-    """Codex 没给固定名字（--name）：一个对话一个身份。
+    """Codex、dsh 没给固定名字（--name）：一个对话一个身份。
 
-    Codex 每次调用工具都在 _meta.threadId 里带上对话 ID；它按对话启动 MCP 进程，但启动时还不知道是哪个对话，
-    所以第一次调用工具时才认领。给了 --name 就和以前一样，所有对话共用那一个身份。
+    启动 MCP 进程时还不知道是哪个对话，所以第一次调用工具时才认领（见 _request_thread）。
+    给了 --name 就和以前一样，所有对话共用那一个身份。
     """
-    return _KIND == "codex" and _NAME is None
+    return _KIND in ("codex", "dsh") and _NAME is None
 
 
-def _request_thread() -> str | None:
+def _request_thread() -> tuple[str, str | None, str | None] | None:
+    """这次调用来自哪个对话：(对话 ID, 工作目录, 标题)；不知道就是 None，后两项不知道也是 None。
+
+    Codex 每次调用工具都在 _meta.threadId 里带上对话 ID（工作目录从它的记录文件里读，见 _thread_cwd）。
+    dsh 什么都不带：它的插件在调用前把会话写进 wake/dsh-<dsh 进程号>.calling.json（见 wake/dsh_wake.mjs）。
+    """
+    if _KIND == "dsh":
+        from .wake.dsh import calling
+        return calling(_HOST)
     try:
         meta = mcp.get_context().request_context.meta
         tid = (meta.model_extra or {}).get("threadId") if meta is not None else None
     except Exception:
         return None  # 不在请求里（测试直接调用）或者客户端没带
-    return str(tid) if tid else None
+    return (str(tid), None, None) if tid else None
 
 
 def _thread_cwd(thread: str) -> str:
@@ -65,12 +74,13 @@ def _thread_cwd(thread: str) -> str:
 
 def _me() -> int:
     global _ME, _THREAD
-    tid = _request_thread()
+    conv = _request_thread()
+    tid, title = (conv[0], conv[2]) if conv else (None, None)
     if tid and _per_thread():
         row = _row(_BY_THREAD[tid]) if tid in _BY_THREAD else None
         # 第一次用；身份在回收站里被永久删除了；daemon 托管的、记下的命令行窗口关了（重开过窗口）：重新认领
         if row is None or (_HOST_TAG == "codex-daemon" and not db.is_online(row)):
-            cwd = _thread_cwd(tid)
+            cwd = conv[1] or (_thread_cwd(tid) if _KIND == "codex" else os.getcwd())
             pid = _HOST
             if _HOST_TAG == "codex-daemon":
                 # daemon 关了窗口还会把对话留很久：在不在线看用户开着的命令行窗口（重开过窗口就换成新的），
@@ -78,6 +88,9 @@ def _me() -> int:
                 from .wake.codex import cli_window
                 pid = cli_window([cwd, os.getcwd()]) or os.getpid()
             _BY_THREAD[tid] = db.claim_thread(_KIND, tid, cwd, pid=pid, host=_HOST_TAG)
+        if title and _TITLES.get(tid) != title:  # dsh 的会话标题（第一句话以后才生成，之后还可能改）
+            db.set_title(_BY_THREAD[tid], title)
+            _TITLES[tid] = title
         return _BY_THREAD[tid]
     if _ME is None or _row(_ME) is None:  # 第一次用，或者身份在回收站里被永久删除了
         _ME = db.claim(kind=_KIND, cwd=os.getcwd(), name=_NAME, pid=_HOST)
@@ -155,6 +168,7 @@ def _release() -> None:
 
     桌面版托管的对话身份不动：Codex 会卸载闲着的对话（连同它的 MCP 进程），但桌面版开着就叫得醒；
     桌面版关了，is_online 自然会当它离线。daemon 托管的记的是命令行窗口（或者这个进程），关了自然离线。
+    dsh 的会话身份也不动：dsh 开着就叫得醒它的任何会话，dsh 关了自然离线。
     """
     ids = [] if _HOST_TAG else list(_BY_THREAD.values())
     if _ME is not None:
@@ -166,7 +180,7 @@ def _release() -> None:
 def start(kind: str, name: str | None = None) -> int | None:
     """认领身份并注册退出清理；返回 agent id（不进入事件循环，测试用）。
 
-    一个对话一个身份时（见 _per_thread）这里还不认领，返回 None；桌面版先把以前的对话身份接上（db.adopt）。
+    一个对话一个身份时（见 _per_thread）这里还不认领，返回 None；Codex 桌面版、dsh 先把以前的对话身份接上（db.adopt）。
     """
     global _KIND, _NAME, _HOST, _HOST_TAG, _ME, _THREAD
     db.init_db()
@@ -176,6 +190,7 @@ def start(kind: str, name: str | None = None) -> int | None:
         pass
     _KIND, _NAME, _ME, _THREAD = kind, name, None, None
     _BY_THREAD.clear()
+    _TITLES.clear()
     _HOST = db.host_pid()  # agent 本身的进程：同一个 agent 开的多个 MCP 进程共用一个身份
     _HOST_TAG = None
     if kind == "codex":
@@ -184,9 +199,11 @@ def start(kind: str, name: str | None = None) -> int | None:
             _HOST_TAG = "codex-desktop"
         elif hosted_by_daemon(_HOST):
             _HOST_TAG = "codex-daemon"
+    elif kind == "dsh":
+        _HOST_TAG = "dsh"  # dsh 开着就能叫醒它的任何会话（插件用 sessionController.prompt 发进去）
     atexit.register(_release)
     if _per_thread():
-        if _HOST_TAG == "codex-desktop":  # daemon 托管的不接：要看命令行窗口开没开
+        if _HOST_TAG in ("codex-desktop", "dsh"):  # daemon 托管的不接：要看命令行窗口开没开
             db.adopt(kind, _HOST_TAG, _HOST)
         return None
     _ME = db.claim(kind=kind, cwd=os.getcwd(), name=name, pid=_HOST)
