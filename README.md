@@ -58,7 +58,12 @@ uv tool upgrade kopitiam
 | `kopitiam wake` | 不开网页时单独运行自动唤醒 |
 | `kopitiam export --agent <claude\|codex\|pi\|dsh> --cwd <项目目录> [--mode clean\|full] [--session-file P]` | 调试用：把某个 agent 的对话记录导出成 Markdown |
 
-agent 侧工具一共 8 个：`whoami who send read history rename set_cwd export_context`。
+agent 侧工具一共 9 个：`whoami who send read history rename switch_identity set_cwd export_context`。
+
+**换身份**（`switch_identity`）：同一个文件夹里有好几个同类的身份时（比如多开留下的 `claude@X-2`，或者 Codex 同一个项目的几个对话），可以让 agent 换成其中一个，之后用它的名字、未读消息和历史。直接跟 agent 说「换回 claude@X」就行；不带名字调用会列出能换的身份。
+- 正被别的 agent 用着的不能换。
+- 两个身份是**交换**：Codex、dsh 的对话交换各自绑定的身份，以后一直这样（新对话接手旧对话的身份就用这个）；Claude Code、pi 换完以后，原来的身份没有消息的话直接删掉。
+- Claude Code、pi 重开以后还是按文件夹认领（最早建的那个），要别的就再换一次。
 
 ## 各 agent 接入
 
@@ -130,7 +135,7 @@ startup_timeout_sec = 30
 > - **一个会话一个身份**（要先装下面「自动唤醒 → dsh」的插件）：名字按会话的工作目录取，比如 `dsh@Client`，同一个文件夹的第二个会话叫 `dsh@Client-2`；网页成员列表和 `who` 会附上会话标题。会话要先调用一次 kopitiam（比如 `whoami`）才会出现；dsh 开着，它的会话身份就都在线（闲着的会话也叫得醒），dsh 重开以后 7 天内用过的会自动接上。`export_context` 按会话 ID 直接找记录，不用先 `set_cwd`。
 > - 想让所有会话共用一个身份（以前的用法），在 `args` 里加 `"--name", "dsh"`：自动唤醒交给最近一次调用 kopitiam 的那个会话。没装插件时 kopitiam 不知道是哪个会话，也只能这样用（导出前要先 `set_cwd`：dsh 网页版的 MCP 启动目录不跟着工作区走）。
 
-**pi**：`pi mcp list` 应显示 `kopitiam: connected, 8 tools (direct, global)`。`mcp.json` 里给 kopitiam 加上 `"exposure": "direct"`，模型就能直接看到工具；默认的 `codemode` 方式要先写脚本搜索才能找到。
+**pi**：`pi mcp list` 应显示 `kopitiam: connected, 9 tools (direct, global)`。`mcp.json` 里给 kopitiam 加上 `"exposure": "direct"`，模型就能直接看到工具；默认的 `codemode` 方式要先写脚本搜索才能找到。
 
 **Codex**：`codex mcp list` 里 kopitiam 应为 `enabled`。
 
@@ -309,7 +314,7 @@ uv run pytest    # 跑全部测试
 
 ## 已知限制
 
-- **身份可能互换**：在同一个文件夹里同时开两个 Claude Code（或两个 pi）的话，第二个叫 `claude@X-2`，重启后它们可能会互相拿到对方的名字。只开一个的时候，总是认领回原来的 `claude@X`（没有消息的 `-2` 会顺手删掉）。需要固定名字时用 `--name`。Codex、dsh 按对话（会话）ID 认身份，不会互换。
+- **身份可能互换**：在同一个文件夹里同时开两个 Claude Code（或两个 pi）的话，第二个叫 `claude@X-2`，重启后它们可能会互相拿到对方的名字。只开一个的时候，总是认领回原来的 `claude@X`（没有消息的 `-2` 会顺手删掉）。拿错了就让 agent 用 `switch_identity` 换回来；需要固定名字时用 `--name`。Codex、dsh 按对话（会话）ID 认身份，不会互换。
 - **Codex、dsh 的新对话（会话）要先用一次 kopitiam**：启动 MCP 进程时不知道是哪个对话，要等第一次调用工具（Codex 带着对话 ID，dsh 靠插件写下会话 ID）才知道。所以新对话在那之前不会出现在成员列表里，也叫不醒。
 - **遮盖不保证完全**：`export_context` 会用正则遮盖常见的密钥/token，但只是尽量，不能保证全部遮住。导出文件发给别人/别的 agent 之前先扫一眼。
 - **网页只给本机用**：网页只监听 127.0.0.1 且校验 token；跨电脑只有「团队」里人和人之间的消息，走单独的团队端口，不能远程打开别人的网页。聊天内容明文存在本机 SQLite 里，团队消息在网络上也是明文（见「团队」）。

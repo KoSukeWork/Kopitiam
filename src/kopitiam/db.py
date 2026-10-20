@@ -304,6 +304,11 @@ def _same_host(row, pid: int) -> bool:
     return row["pid"] == pid and is_online(row)
 
 
+def _same_dir(a, b) -> bool:
+    """两个身份是不是同一个文件夹的（按认领时的目录比，set_cwd 改过的不算）。"""
+    return norm(a["launch_cwd"] or a["cwd"]) == norm(b["launch_cwd"] or b["cwd"])
+
+
 def _usable(row, pid: int) -> bool:
     # 团队里别人的身份（kind=remote）不能被本机 agent 认领，当作名字已占用
     return row["kind"] != "remote" and (not is_online(row) or _same_host(row, pid))
@@ -1240,6 +1245,75 @@ class Chat:
                 c.execute("ROLLBACK")
                 raise
         return f"已改名：{old} → {new_name}"
+
+    # ---- 换身份：同一个文件夹里同类的几个身份（多开留下的 claude@X-2 等）里挑一个 ----
+
+    _SWAP = ("pid", "pid_ctime", "host", "thread_id", "title")  # 「谁在用、哪个对话」：换身份时两边交换
+
+    def switch_options(self, me: int) -> str:
+        with _conn() as c:
+            me_row = self._me(c, me)
+            rows = [r for r in c.execute("SELECT * FROM agents WHERE kind=? AND id<>? ORDER BY id",
+                                         (me_row["kind"], me)) if _same_dir(r, me_row)]
+            counts = _message_counts(c)
+        if not rows:
+            return f"你是 {me_row['name']}。同一个文件夹里没有别的 {me_row['kind']} 身份。"
+        titles = _titles(rows)
+        lines = [f"你是 {me_row['name']}。同一个文件夹里还有这些 {me_row['kind']} 身份："]
+        for r in rows:
+            notes = [f"对话：{titles[r['id']]}"] if r["id"] in titles else []
+            notes.append(f"{counts.get(r['id'], 0)} 条消息")
+            if r["trashed_at"]:
+                notes.append("在回收站里")
+            elif r["archived_at"]:
+                notes.append("已归档")
+            if not _usable(r, me_row["pid"]):
+                state = "在线，正被别的 agent 用着，不能换"
+            else:
+                state = "在线" if is_online(r) else f"离线（{_ago(r['last_seen'])}）"
+            lines.append(f"- {r['name']}  {state}；{'，'.join(notes)}")
+        lines.append('用 switch_identity(name="…") 换过去。')
+        return "\n".join(lines)
+
+    def switch(self, me: int, name: str) -> tuple[int, str]:
+        """换成 name：两个身份交换「谁在用、哪个对话」（_SWAP），返回 (换完以后的 id, 给 agent 的文本)。
+
+        原来的身份换给了 name 原来的状态：name 本来离线、没绑对话的（多开留下的空身份就是这样），
+        原来的身份就变成离线；它没有消息的话直接删掉。Codex、dsh 的对话身份是交换绑定的对话。
+        """
+        with _conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                me_row = self._me(c, me)
+                t = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
+                if t is None:
+                    raise _Fail(f'错误：找不到 "{name}"')
+                if t["id"] == me:
+                    raise _Fail(f"错误：你已经是 {name} 了")
+                if t["kind"] != me_row["kind"]:
+                    raise _Fail(f"错误：只能换成 {me_row['kind']} 类的身份，{name} 是 {t['kind']}")
+                if not _same_dir(t, me_row):
+                    raise _Fail(f"错误：只能换成同一个文件夹里的身份，{name} 在 {t['launch_cwd']}")
+                if not _usable(t, me_row["pid"]):
+                    raise _Fail(f"错误：{name} 正被别的 agent 用着，不能换")
+                sets = ", ".join(f"{k}=?" for k in self._SWAP)
+                c.execute(f"UPDATE agents SET {sets}, last_seen=?, archived_at=NULL, trashed_at=NULL WHERE id=?",
+                          (*[me_row[k] for k in self._SWAP], now_iso(), t["id"]))
+                c.execute(f"UPDATE agents SET {sets} WHERE id=?", (*[t[k] for k in self._SWAP], me))
+                left = c.execute("SELECT * FROM agents WHERE id=?", (me,)).fetchone()
+                dropped = left["thread_id"] is None and not is_online(left) and not _message_counts(c).get(me)
+                if dropped:
+                    c.execute("DELETE FROM agents WHERE id=?", (me,))
+                c.execute("COMMIT")
+            except _Fail as e:
+                c.execute("ROLLBACK")
+                return me, str(e)
+            except BaseException:
+                c.execute("ROLLBACK")
+                raise
+        old = me_row["name"]
+        tail = f"原来的 {old} 没有消息，已删掉" if dropped else f"原来的 {old} 还在，想换回去再用 switch_identity"
+        return int(t["id"]), f"已换成 {name}（{tail}）。"
 
     # ---- 6.7 set_cwd ----
 

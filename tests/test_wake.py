@@ -1070,6 +1070,40 @@ def test_mcp_dsh_one_identity_per_session(home, monkeypatch):
     assert set(rows) == {"session-1", "session-2"} and rows["session-1"]["host"] == "dsh"
 
 
+def test_mcp_switch_identity_swaps_conversations(home):
+    import anyio
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from kopitiam import mcp_server
+
+    proj = home / "Client"
+    calling = wake_dir() / f"dsh-{db.host_pid()}.calling.json"
+    calling.parent.mkdir(parents=True, exist_ok=True)
+    mcp_server.start("dsh")
+
+    async def call(session, tool, args=None, title=""):
+        calling.write_text(json.dumps({"session": session, "cwd": str(proj), "title": title}), encoding="utf-8")
+        async with create_connected_server_and_client_session(mcp_server.mcp) as client:
+            r = await client.call_tool(tool, args or {})
+        calling.unlink()
+        return r.content[0].text
+
+    assert anyio.run(call, "session-1", "whoami", None, "旧任务").startswith("你是 dsh@Client（")
+    assert anyio.run(call, "session-2", "whoami", None, "新任务").startswith("你是 dsh@Client-2（")
+    Chat().send(db.user_id(), "给旧任务的", ["dsh@Client"])
+    assert "dsh@Client  在线" in anyio.run(call, "session-2", "switch_identity")  # dsh 开着：同一个 agent，能换
+
+    # 新会话接手旧会话的身份（名字、未读）；两个会话交换身份
+    out = anyio.run(call, "session-2", "switch_identity", {"name": "dsh@Client"}, "新任务")
+    assert out.startswith("已换成 dsh@Client（原来的 dsh@Client-2 还在") and "未读消息 1 条" in out
+    assert anyio.run(call, "session-2", "whoami", None, "新任务").startswith("你是 dsh@Client（")
+    assert anyio.run(call, "session-1", "whoami", None, "旧任务").startswith("你是 dsh@Client-2（")
+    with closing(db.connect()) as c:
+        rows = {r["name"]: r for r in c.execute("SELECT * FROM agents WHERE kind='dsh'")}
+    assert rows["dsh@Client"]["thread_id"] == "session-2" and rows["dsh@Client"]["title"] == "新任务"
+    assert rows["dsh@Client-2"]["thread_id"] == "session-1" and rows["dsh@Client-2"]["title"] == "旧任务"
+
+
 NODE_DRIVER = r"""
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

@@ -225,6 +225,35 @@ def test_claim_prefers_the_original_identity_over_a_spare(home):
     assert names == {"claude@Proj", "claude@Proj-2"}
 
 
+def test_switch_identity_among_duplicates(home):
+    proj = str(home / "Proj")
+    a = db.claim("claude", cwd=proj, pid=os.getpid())
+    b = db.claim("claude", cwd=proj, pid=os.getppid())  # a 开着的时候又开了一个 → claude@Proj-2
+    other = db.claim("claude", cwd=str(home / "Other"), pid=os.getppid())
+    pi = db.claim("pi", cwd=proj, pid=os.getppid())
+    chat = db.Chat()
+    chat.send(a, "a 发过的消息")
+    out = chat.switch_options(b)
+    assert "正被别的 agent 用着，不能换" in out and "1 条消息" in out
+    assert "claude@Other" not in out and "pi@Proj" not in out  # 只列同一个文件夹、同类的
+    assert chat.switch(b, "claude@Proj")[1] == "错误：claude@Proj 正被别的 agent 用着，不能换"
+    assert chat.switch(b, "claude@Other")[1].startswith("错误：只能换成同一个文件夹里的身份")
+    assert chat.switch(b, "pi@Proj")[1].startswith("错误：只能换成 claude 类的身份")
+    assert chat.switch(b, "claude@Proj-2")[1] == "错误：你已经是 claude@Proj-2 了"
+    assert chat.switch(b, "nobody")[0] == b
+
+    db.release(a)  # a 的 agent 退出了：b 可以换成它
+    assert "离线（" in chat.switch_options(b)
+    new, text = chat.switch(b, "claude@Proj")
+    assert new == a and "原来的 claude@Proj-2 没有消息，已删掉" in text
+    with db._conn() as c:
+        row = c.execute("SELECT * FROM agents WHERE id=?", (a,)).fetchone()
+        assert row["pid"] == os.getppid() and db.is_online(row)  # 接手了 b 的进程：叫醒、在线都跟着
+        assert c.execute("SELECT 1 FROM agents WHERE id=?", (b,)).fetchone() is None
+    assert chat.whoami(a).startswith("你是 claude@Proj")
+    assert other and pi
+
+
 def test_host_pid_is_a_live_ancestor():
     import psutil
 
