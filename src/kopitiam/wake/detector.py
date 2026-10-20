@@ -32,6 +32,7 @@ class WakeCall:
     prev_woken_upto: int = 0  # 叫醒失败时恢复成这个值，下一条新消息还能再叫
     text: str = field(default="")
     thread_id: str | None = None  # 要叫醒的对话（只有 Codex 有，见 agents.thread_id）
+    host: str | None = None  # 托管它的是哪一类进程（见 agents.host）
 
     @property
     def wake_id(self) -> str:
@@ -166,7 +167,7 @@ def scan(check: Callable[[dict], str | None]) -> list[WakeCall]:
                     continue
                 senders = list(dict.fromkeys(names.get(r["sender_id"], "?") for r in ok))
                 call = WakeCall(a["id"], a["name"], a["kind"], a["pid"], [r["id"] for r in ok], senders,
-                                prev_woken_upto=a["woken_upto"], thread_id=a["thread_id"])
+                                prev_woken_upto=a["woken_upto"], thread_id=a["thread_id"], host=a["host"])
                 call.text = wake_text(senders, len(ok))
                 c.execute("UPDATE wake_state SET woken_upto=?, woken_pid=? WHERE agent_id=?",
                           (max(call.message_ids), a["pid"], a["id"]))

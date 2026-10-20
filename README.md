@@ -194,7 +194,7 @@ kopitiam setup dsh --remove        # 删掉
 - 万一排进去 45 秒还没开始、对话也闲着，弹一个 Windows 通知提醒你（见下面「通知」）。
 
 **Codex 命令行**：codex-cli 0.163 默认把对话放在共享的 app-server daemon 上（第一个命令行窗口会把它启动起来，程序在 `~/.codex/packages/app-server-daemon/`），kopitiam 的 MCP 进程就挂在 daemon 下面。这时用 `codex queue --thread <对话ID> --message <提示>` 排一条消息：对话闲着马上开始，正在忙就这一轮做完接着做，**不用装 hook**。同样，每个对话先用一次 kopitiam 才有自己的身份。
-关掉命令行窗口以后 daemon 还在后台跑，但那个对话已经卸载了（连同它的 kopitiam 进程），所以它的身份按「那个对话的 kopitiam 进程还在不在」算在线，窗口一关就离线；重新打开那个对话以后，要再用一次 kopitiam 才会重新在线。在 codex-cli 0.163.0 上验证过：闲着的命令行对话约 1 秒后自己开始 `read`，再用 `send` 回复。
+关掉命令行窗口以后，daemon 还会把那个对话（连同它的 kopitiam 进程）留在后台很久（实测 8 分钟以上还在），所以 daemon 托管的对话按「那个文件夹里还有没有开着的 Codex 命令行窗口」算在线：窗口一关就离线。重新打开窗口、接着用那个对话时，它再用一次 kopitiam 就重新在线。同一个文件夹开着好几个窗口时，看最新的那个。在 codex-cli 0.163.0 上验证过：闲着的命令行对话约 1 秒后自己开始 `read`，再用 `send` 回复。
 
 > 命令行版默认每次调用 MCP 工具都会问「Allow the kopitiam MCP server to run tool …?」，被叫醒的这一轮也会停在这里等你点。想让它自己跑完，第一次问的时候选「Always allow」。
 

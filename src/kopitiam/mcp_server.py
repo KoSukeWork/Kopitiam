@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import atexit
 import os
+from contextlib import closing
 
 from mcp.server.fastmcp import FastMCP
 
@@ -66,10 +67,15 @@ def _me() -> int:
     global _ME, _THREAD
     tid = _request_thread()
     if tid and _per_thread():
-        if tid not in _BY_THREAD:
-            # daemon 关了窗口还在后台跑，但对话已经卸载（连同这个 MCP 进程）：在不在线看这个进程本身
-            pid = os.getpid() if _HOST_TAG == "codex-daemon" else _HOST
-            _BY_THREAD[tid] = db.claim_thread(_KIND, tid, _thread_cwd(tid), pid=pid, host=_HOST_TAG)
+        if tid not in _BY_THREAD or (_HOST_TAG == "codex-daemon" and not _online(_BY_THREAD[tid])):
+            cwd = _thread_cwd(tid)
+            pid = _HOST
+            if _HOST_TAG == "codex-daemon":
+                # daemon 关了窗口还会把对话留很久：在不在线看用户开着的命令行窗口（重开过窗口就换成新的），
+                # 找不到窗口就看这个 MCP 进程本身
+                from .wake.codex import cli_window
+                pid = cli_window([cwd, os.getcwd()]) or os.getpid()
+            _BY_THREAD[tid] = db.claim_thread(_KIND, tid, cwd, pid=pid, host=_HOST_TAG)
         return _BY_THREAD[tid]
     if _ME is None:
         _ME = db.claim(kind=_KIND, cwd=os.getcwd(), name=_NAME, pid=_HOST)
@@ -78,6 +84,12 @@ def _me() -> int:
         db.set_thread(_ME, tid)
         _THREAD = tid
     return _ME
+
+
+def _online(agent_id: int) -> bool:
+    with closing(db.connect()) as c:
+        row = c.execute("SELECT * FROM agents WHERE id=?", (agent_id,)).fetchone()
+    return row is not None and db.is_online(row)
 
 
 def _call(fn, *args, **kwargs) -> str:
@@ -140,7 +152,7 @@ def _release() -> None:
     """进程退出：把认领过的身份标成离线。
 
     桌面版托管的对话身份不动：Codex 会卸载闲着的对话（连同它的 MCP 进程），但桌面版开着就叫得醒；
-    桌面版关了，is_online 自然会当它离线。daemon 托管的记的就是这个进程，退出了自然离线。
+    桌面版关了，is_online 自然会当它离线。daemon 托管的记的是命令行窗口（或者这个进程），关了自然离线。
     """
     ids = [] if _HOST_TAG else list(_BY_THREAD.values())
     if _ME is not None:
@@ -172,7 +184,7 @@ def start(kind: str, name: str | None = None) -> int | None:
             _HOST_TAG = "codex-daemon"
     atexit.register(_release)
     if _per_thread():
-        if _HOST_TAG:
+        if _HOST_TAG == "codex-desktop":  # daemon 托管的不接：要看命令行窗口开没开
             db.adopt(kind, _HOST_TAG, _HOST)
         return None
     _ME = db.claim(kind=kind, cwd=os.getcwd(), name=name, pid=_HOST)

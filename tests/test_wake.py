@@ -475,17 +475,64 @@ def test_mcp_codex_on_daemon_goes_offline_with_its_conversation(home, monkeypatc
 
     monkeypatch.setattr(codex, "hosted_by_desktop", lambda pid: False)
     monkeypatch.setattr(codex, "hosted_by_daemon", lambda pid: True)
+    window = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])  # 用户开着的命令行窗口
+    monkeypatch.setattr(codex, "cli_window", lambda cwds: window.pid)
     mcp_server.start("codex")
 
-    async def go():
+    def row():
+        with closing(db.connect()) as c:
+            return c.execute("SELECT * FROM agents WHERE thread_id='t-1'").fetchone()
+
+    async def whoami():
         async with create_connected_server_and_client_session(mcp_server.mcp) as client:
             await client.call_tool("whoami", {}, meta={"threadId": "t-1"})
 
-    anyio.run(go)
-    with closing(db.connect()) as c:
-        row = c.execute("SELECT * FROM agents WHERE thread_id='t-1'").fetchone()
-    # daemon 关了窗口还在跑：记这个对话自己的 MCP 进程，对话卸载（进程退出）就离线
-    assert row["pid"] == os.getpid() and row["host"] == "codex-daemon"
+    try:
+        anyio.run(whoami)
+        r = row()
+        assert r["pid"] == window.pid and r["host"] == "codex-daemon" and db.is_online(r)
+    finally:
+        window.kill()
+        window.wait(10)
+    # daemon 关了窗口还会把对话留很久（这个 MCP 进程还在）：看窗口，关了就离线
+    assert not db.is_online(row())
+    mcp_server.start("codex")  # daemon 重开、重新加载这个对话：没有窗口，不能接上
+    assert not db.is_online(row())
+
+    again = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])  # 重开窗口，接着用这个对话
+    monkeypatch.setattr(codex, "cli_window", lambda cwds: again.pid)
+    try:
+        anyio.run(whoami)
+        assert row()["pid"] == again.pid and db.is_online(row())
+    finally:
+        again.kill()
+        again.wait(10)
+
+
+def test_cli_window_is_the_codex_tui_in_that_folder(monkeypatch):
+    import psutil
+
+    from kopitiam.wake import codex
+
+    class P:
+        def __init__(self, pid, cmd, cwd, t):
+            self.pid, self._cmd, self._cwd = pid, cmd, cwd
+            self.info = {"name": "codex.exe", "create_time": t}
+
+        def cmdline(self):
+            return self._cmd
+
+        def cwd(self):
+            return self._cwd
+
+    procs = [P(1, ["codex.exe", "app-server", "--listen", "unix://"], r"C:\proj", 9),  # daemon
+             P(2, ["codex.exe", "queue", "--thread", "t"], r"C:\proj", 8),  # 我们自己跑的 codex queue
+             P(3, ["codex.exe"], r"C:\proj", 1),
+             P(4, ["codex.exe", "resume"], r"c:/PROJ", 2),  # 同一个文件夹、更新的窗口
+             P(5, ["codex.exe"], r"C:\other", 3)]
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: iter(procs))
+    assert codex.cli_window([r"C:\proj"]) == 4
+    assert codex.cli_window([r"C:\nothing"]) is None
 
 
 def test_codex_daemon_found_above_the_mcp_process(monkeypatch):
@@ -583,8 +630,10 @@ def test_codex_stop_hook_skips_when_already_read(codex_room):
 
 def test_codex_daemon_uses_codex_queue(codex_room, monkeypatch):
     c, codex = codex_room
-    monkeypatch.setattr(codex, "hosted_by_daemon", lambda pid: True)
-    monkeypatch.setattr(codex, "_daemon_exe", lambda pid: r"C:\daemon\codex.exe")
+    monkeypatch.setattr(codex, "hosted_by_daemon", lambda pid: False)  # pid 是用户开着的命令行窗口
+    with closing(db.connect()) as conn:
+        conn.execute("UPDATE agents SET host='codex-daemon' WHERE id=?", (c,))
+    monkeypatch.setattr(codex, "_queue_exe", lambda pid: r"C:\cli\codex.exe")
     calls = []
 
     class Done:
@@ -593,7 +642,7 @@ def test_codex_daemon_uses_codex_queue(codex_room, monkeypatch):
     monkeypatch.setattr(codex.subprocess, "run", lambda args, **kw: calls.append(args) or Done())
     _send(db.user_id(), "codex")
     assert [(x.name, err) for x, err in service.run_once()] == [("codex", None)]
-    assert calls[0][:4] == [r"C:\daemon\codex.exe", "queue", "--thread", "thread-1"]
+    assert calls[0][:4] == [r"C:\cli\codex.exe", "queue", "--thread", "thread-1"]
     assert "kopitiam：你有 1 条新消息" in calls[0][5]
     assert _note(c).startswith("已叫醒")
 

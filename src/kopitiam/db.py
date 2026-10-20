@@ -99,7 +99,8 @@ CREATE TABLE IF NOT EXISTS wake_state(
 #   配置里给了固定名字（--name）时所有对话共用一个身份，这里记的是最近一次调用 kopitiam 的对话。
 # agents.host：托管这个身份的是哪一类进程（目前只有 Codex 的对话身份记）：
 #   "codex-desktop" = 桌面版。桌面版开着，没加载的对话也叫得醒，所以它重开以后要把这些对话的身份重新接上（adopt）。
-#   "codex-daemon" = 命令行用的共享 daemon。它关了窗口还在跑，所以 pid 记的是那个对话自己的 MCP 进程。
+#   "codex-daemon" = 命令行用的共享 daemon。关了窗口它还会把对话留很久，所以 pid 记的是用户开着的命令行窗口
+#   （找不到窗口时记那个对话自己的 MCP 进程）。
 # wake_state：自动唤醒的进度（只有感知模块读写，见 wake/detector.py）。seen_upto = 这个 id 及以前的消息
 #   已经判断过要不要叫醒；woken_upto = 最近一次叫醒时包含的最大消息 id（agent 读到这里之前不重复叫）；
 #   woken_pid = 那次叫醒交给的 agent 进程（agent 换了进程，说明那次多半没送到，可以再叫）；

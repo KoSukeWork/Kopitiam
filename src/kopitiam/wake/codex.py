@@ -31,7 +31,7 @@ import uuid
 from contextlib import closing
 from pathlib import Path
 
-from ..config import safe, wake_dir
+from ..config import norm, safe, wake_dir
 from . import hookfile, notify, signals
 
 HANDED_OFF = "已交给 Codex：它这一轮做完会接着读（闲着的话会弹通知提醒你）"
@@ -71,6 +71,49 @@ def _daemon_exe(pid: int | None) -> str | None:
 def hosted_by_daemon(pid: int | None) -> bool:
     """MCP 进程挂在共享 daemon 下面。"""
     return _daemon_exe(pid) is not None
+
+
+def _on_daemon(agent) -> bool:
+    """这个身份的对话由共享 daemon 托管（pid 是用户开着的命令行窗口，或者那个对话的 MCP 进程）。"""
+    return agent.get("host") == "codex-daemon" or hosted_by_daemon(agent.get("pid"))
+
+
+def cli_window(cwds: list[str]) -> int | None:
+    """用户开着的 Codex 命令行窗口：工作目录是 cwds 之一的 codex 进程，有好几个就取最新的。
+
+    daemon 关了窗口还会把对话留在内存里很久（实测 8 分钟以上），所以 daemon 托管的对话在不在线看窗口。
+    窗口是 npm 的 codex.js 启动的 codex.exe，工作目录就是你运行 codex 的文件夹。
+    daemon、桌面版的 app-server、codex queue 这些不是窗口，不算。
+    """
+    import psutil
+
+    want = {norm(c) for c in cwds if c}
+    best = None
+    for p in psutil.process_iter(["name", "create_time"]):
+        try:
+            if (p.info["name"] or "").lower() not in ("codex.exe", "codex"):
+                continue
+            args = [a.lower() for a in p.cmdline()[1:]]
+            if "app-server" in args or args[:1] in (["queue"], ["mcp-server"]) or norm(p.cwd()) not in want:
+                continue
+        except psutil.Error:
+            continue
+        if best is None or p.info["create_time"] > best.info["create_time"]:
+            best = p
+    return best.pid if best else None
+
+
+def _queue_exe(pid: int | None) -> str | None:
+    """跑 codex queue 用的程序：pid 上面的 daemon，或者 pid 本身就是命令行窗口（同一个 codex 程序）。"""
+    daemon = _daemon_exe(pid)
+    if daemon:
+        return daemon
+    try:
+        import psutil
+        p = psutil.Process(pid) if pid else None
+        return p.exe() if p is not None and p.name().lower() in ("codex.exe", "codex") else None
+    except Exception:
+        return None
 
 
 def hosted_by_desktop(pid: int | None) -> bool:
@@ -163,7 +206,7 @@ def check(agent: dict) -> str | None:
     if not agent.get("thread_id"):
         return "Codex 还没在对话里用过 kopitiam（先让要接收消息的那个对话调用一次 kopitiam，比如 whoami）"
     pid = agent.get("pid")
-    if hosted_by_daemon(pid) or (hosted_by_desktop(pid) and queue_problem() is None) \
+    if _on_daemon(agent) or (hosted_by_desktop(pid) and queue_problem() is None) \
             or signals.ready("codex", agent):
         return None
     return "Codex 没装接力 hook（运行 kopitiam setup codex，然后重开 Codex）"
@@ -172,7 +215,7 @@ def check(agent: dict) -> str | None:
 def hint(agent: dict) -> str | None:
     """能叫醒，但有限制：给网页显示。"""
     pid = agent.get("pid")
-    if hosted_by_daemon(pid):
+    if _on_daemon(agent):
         return None
     if hosted_by_desktop(pid):
         problem = queue_problem()
@@ -183,9 +226,11 @@ def hint(agent: dict) -> str | None:
 
 
 def wake(call) -> str | None:
-    daemon = _daemon_exe(call.pid)
-    if daemon:
-        r = subprocess.run([daemon, "queue", "--thread", call.thread_id, "--message", call.text],
+    if _on_daemon({"host": call.host, "pid": call.pid}):
+        exe = _queue_exe(call.pid)
+        if not exe:
+            raise RuntimeError("找不到 codex 程序（命令行窗口可能刚关掉）")
+        r = subprocess.run([exe, "queue", "--thread", call.thread_id, "--message", call.text],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         if r.returncode != 0:
             raise RuntimeError((r.stderr or r.stdout).strip()[:200] or f"codex queue 退出码 {r.returncode}")
