@@ -67,7 +67,9 @@ def _me() -> int:
     tid = _request_thread()
     if tid and _per_thread():
         if tid not in _BY_THREAD:
-            _BY_THREAD[tid] = db.claim_thread(_KIND, tid, _thread_cwd(tid), pid=_HOST, host=_HOST_TAG)
+            # daemon 关了窗口还在后台跑，但对话已经卸载（连同这个 MCP 进程）：在不在线看这个进程本身
+            pid = os.getpid() if _HOST_TAG == "codex-daemon" else _HOST
+            _BY_THREAD[tid] = db.claim_thread(_KIND, tid, _thread_cwd(tid), pid=pid, host=_HOST_TAG)
         return _BY_THREAD[tid]
     if _ME is None:
         _ME = db.claim(kind=_KIND, cwd=os.getcwd(), name=_NAME, pid=_HOST)
@@ -138,9 +140,9 @@ def _release() -> None:
     """进程退出：把认领过的身份标成离线。
 
     桌面版托管的对话身份不动：Codex 会卸载闲着的对话（连同它的 MCP 进程），但桌面版开着就叫得醒；
-    桌面版关了，is_online 自然会当它离线。
+    桌面版关了，is_online 自然会当它离线。daemon 托管的记的就是这个进程，退出了自然离线。
     """
-    ids = [] if _HOST_TAG == "codex-desktop" else list(_BY_THREAD.values())
+    ids = [] if _HOST_TAG else list(_BY_THREAD.values())
     if _ME is not None:
         ids.append(_ME)
     for agent_id in ids:
@@ -163,9 +165,11 @@ def start(kind: str, name: str | None = None) -> int | None:
     _HOST = db.host_pid()  # agent 本身的进程：同一个 agent 开的多个 MCP 进程共用一个身份
     _HOST_TAG = None
     if kind == "codex":
-        from .wake.codex import hosted_by_desktop
+        from .wake.codex import hosted_by_daemon, hosted_by_desktop
         if hosted_by_desktop(_HOST):
             _HOST_TAG = "codex-desktop"
+        elif hosted_by_daemon(_HOST):
+            _HOST_TAG = "codex-daemon"
     atexit.register(_release)
     if _per_thread():
         if _HOST_TAG:

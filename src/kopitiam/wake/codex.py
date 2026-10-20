@@ -47,17 +47,30 @@ QUEUE_VERSION = 2
 QUEUE_COLUMNS = ["id", "thread_id", "payload_json", "queue_order", "created_at_ms", "updated_at_ms"]
 
 
-def _exe(pid: int | None) -> str:
+def _daemon_exe(pid: int | None) -> str | None:
+    """共享 daemon（装在 ~/.codex/packages/app-server-daemon/）的程序路径：pid 本身或者它的上级是 daemon 时才有。
+
+    daemon 托管的对话，身份记的是那个对话自己的 kopitiam MCP 进程（见 mcp_server._me），所以要往上找。
+    """
     try:
         import psutil
-        return psutil.Process(pid).exe() if pid else ""
+        p = psutil.Process(pid) if pid else None
+        chain = [p, *p.parents()] if p else []
     except Exception:
-        return ""
+        return None
+    for q in chain:
+        try:
+            exe = q.exe()
+        except Exception:
+            continue
+        if "app-server-daemon" in exe.replace("\\", "/"):
+            return exe
+    return None
 
 
 def hosted_by_daemon(pid: int | None) -> bool:
-    """MCP 进程挂在共享 daemon 下面（daemon 装在 ~/.codex/packages/app-server-daemon/）。"""
-    return "app-server-daemon" in _exe(pid).replace("\\", "/")
+    """MCP 进程挂在共享 daemon 下面。"""
+    return _daemon_exe(pid) is not None
 
 
 def hosted_by_desktop(pid: int | None) -> bool:
@@ -170,8 +183,9 @@ def hint(agent: dict) -> str | None:
 
 
 def wake(call) -> str | None:
-    if hosted_by_daemon(call.pid):
-        r = subprocess.run([_exe(call.pid), "queue", "--thread", call.thread_id, "--message", call.text],
+    daemon = _daemon_exe(call.pid)
+    if daemon:
+        r = subprocess.run([daemon, "queue", "--thread", call.thread_id, "--message", call.text],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         if r.returncode != 0:
             raise RuntimeError((r.stderr or r.stdout).strip()[:200] or f"codex queue 退出码 {r.returncode}")

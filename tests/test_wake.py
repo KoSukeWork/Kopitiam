@@ -466,6 +466,51 @@ def test_mcp_codex_one_identity_per_thread(home, monkeypatch):
         assert all(db.is_online(r) for r in c.execute("SELECT * FROM agents WHERE kind='codex'"))
 
 
+def test_mcp_codex_on_daemon_goes_offline_with_its_conversation(home, monkeypatch):
+    import anyio
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from kopitiam import mcp_server
+    from kopitiam.wake import codex
+
+    monkeypatch.setattr(codex, "hosted_by_desktop", lambda pid: False)
+    monkeypatch.setattr(codex, "hosted_by_daemon", lambda pid: True)
+    mcp_server.start("codex")
+
+    async def go():
+        async with create_connected_server_and_client_session(mcp_server.mcp) as client:
+            await client.call_tool("whoami", {}, meta={"threadId": "t-1"})
+
+    anyio.run(go)
+    with closing(db.connect()) as c:
+        row = c.execute("SELECT * FROM agents WHERE thread_id='t-1'").fetchone()
+    # daemon 关了窗口还在跑：记这个对话自己的 MCP 进程，对话卸载（进程退出）就离线
+    assert row["pid"] == os.getpid() and row["host"] == "codex-daemon"
+
+
+def test_codex_daemon_found_above_the_mcp_process(monkeypatch):
+    import psutil
+
+    from kopitiam.wake import codex
+
+    class P:
+        def __init__(self, exe, parents=()):
+            self._exe, self._parents = exe, list(parents)
+
+        def exe(self):
+            return self._exe
+
+        def parents(self):
+            return self._parents
+
+    daemon = r"C:\Users\u\.codex\packages\app-server-daemon\releases\0.163.0\bin\codex.exe"
+    tree = {7: P(r"C:\uv\python.exe", [P(r"C:\bin\kopitiam.exe"), P(daemon)]),
+            8: P(r"C:\uv\python.exe", [P(r"C:\Codex\bin\codex.exe")])}
+    monkeypatch.setattr(psutil, "Process", lambda pid: tree[pid])
+    assert codex._daemon_exe(7) == daemon and codex.hosted_by_daemon(7)
+    assert codex._daemon_exe(8) is None and not codex.hosted_by_daemon(8)
+
+
 def test_thread_titles_follow_renames(home):
     from kopitiam.export import codex as codex_export
 
@@ -539,7 +584,7 @@ def test_codex_stop_hook_skips_when_already_read(codex_room):
 def test_codex_daemon_uses_codex_queue(codex_room, monkeypatch):
     c, codex = codex_room
     monkeypatch.setattr(codex, "hosted_by_daemon", lambda pid: True)
-    monkeypatch.setattr(codex, "_exe", lambda pid: r"C:\daemon\codex.exe")
+    monkeypatch.setattr(codex, "_daemon_exe", lambda pid: r"C:\daemon\codex.exe")
     calls = []
 
     class Done:
