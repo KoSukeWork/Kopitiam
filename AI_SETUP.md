@@ -53,7 +53,7 @@ Get-CimInstance Win32_Process -Filter "Name='kopitiam.exe'" | Where-Object { $_.
 1. 还没接好的 agent 要接哪几个（默认全接）。dsh 要接哪个 profile。
 2. 要不要把一小段「kopitiam 使用说明」加进 Claude Code / Codex 的全局指令文件（第 5 步，可选）。
 
-全部都已经接好的话，跳到第 6、7 步。
+全部都已经接好的话，只做第 4 步最后的「已经装过的插件是不是最新的」，然后到第 6、7 步。
 
 ## 第 1 步：准备 uv 和 git（已经有就跳过）
 
@@ -174,9 +174,17 @@ Codex 不装 hook 也能叫醒：桌面版，以及 codex-cli 0.163 起默认的
 
 所以用户选了 Codex 就一起装。
 
-**检查**：每条都输出「已安装：…」或类似的成功提示，没有「错误：」。
+**检查**：每条的退出码都是 0（出错时是 1，并输出「错误：…」）。输出是中文，有的终端会显示成乱码，所以以退出码为准。
 
-**editable 安装的注意**：pi 和 dsh 的插件是**复制**过去的。以后改了 kopitiam 源码里的插件，要再运行一次 `setup pi` / `setup dsh`，然后重开 pi / dsh。
+**已经装过的 pi、dsh 插件是不是最新的**：插件是**复制**过去的，kopitiam 升级以后，或者 editable 安装改了源码以后，就会过期。下面的 `<源码>` 指：
+- GitHub 版：`$(uv tool dir)\kopitiam\Lib\site-packages\kopitiam`
+- editable 安装：`<editable 路径>\src\kopitiam`
+
+检查方法：
+- **pi**：比较 `<源码>\wake\pi_wake.ts` 和 `~\.pi\agent\extensions\kopitiam-wake.ts` 的 `Get-FileHash`，一样就是最新的。
+- **dsh**：装进 profile 的插件文件名带着内容的哈希。`& "<KOPITIAM>" setup dsh --profile <profile> --print` 的输出里有新文件名 `kopitiam-wake-<哈希>.mjs`。profile 文件夹里已经有这个文件，就是最新的。
+
+过期了的：告诉用户，他同意以后再运行一次 `setup pi` / `setup dsh --profile <profile>`，然后重开 pi / dsh。
 
 ## 第 5 步（可选）：给 agent 的使用说明
 
@@ -198,8 +206,15 @@ kopitiam 的 MCP 自带使用说明，不加也会用。用户想加的话，把
 
 自动唤醒在 `kopitiam web` 进程里运行，它要一直开着。看第 0 步查到的结果：
 
-- **已经开着，第 2 步也没升级**：什么都不用做。
-- **已经开着，但第 2 步升级过**：它还在跑旧代码，请用户关掉它再重新运行（第 7 步一起说）。**不要再开第二个**：会报端口被占用。
+- **已经开着，第 2 步也没升级**：什么都不用做。editable 安装要多看一眼，它不走「升级」，源码改了也不会提示。比较 web 的启动时间和源码最后修改的时间：
+
+  ```powershell
+  (Get-Process -Id <第 0 步查到的 ProcessId>).StartTime
+  Get-ChildItem "<editable 路径>\src\kopitiam" -Recurse -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1 FullName, LastWriteTime
+  ```
+
+  源码比 web 新，就按下一条处理。
+- **已经开着，但第 2 步升级过**（或者 editable 的源码比它新）：它还在跑旧代码。请用户关掉它再重新运行（第 7 步一起说）。**不要再开第二个**：会报端口被占用。
 - **没开着**：请用户**在自己的终端里**运行：
 
   ```powershell
@@ -219,7 +234,7 @@ kopitiam 的 MCP 自带使用说明，不加也会用。用户想加的话，把
 2. **要重开哪些程序**：
    - 第 3、4 步动过的 agent 都要重开，包括你自己。
    - Codex 命令行：关掉所有窗口以后，运行 `codex app-server daemon stop`。daemon 会在后台留很久，下次开窗口时会自动启动新的。
-   - `kopitiam web`：第 2 步升级过的话，要重开。
+   - `kopitiam web`：第 2 步升级过，或者 editable 的源码比它新，要重开。
 3. **重开以后怎么验证**：
    1. 在每个 agent 里说「调用 kopitiam 的 whoami」，它会回答「你是 claude@…」这样的名字。Codex、dsh 每个对话（会话）都要先这样用一次，才会出现在网页的成员列表里，也才叫得醒。
    2. 网页左栏能看到它们，显示在线。
