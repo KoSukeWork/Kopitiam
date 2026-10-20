@@ -21,6 +21,8 @@ uv tool install git+https://github.com/KoSukeWork/Kopitiam.git
 uv tool install --editable <本项目目录>
 ```
 
+> **两种装法之间切换之前，先关掉所有在用 kopitiam 的程序**：`kopitiam web`、Claude Code、Codex（命令行版关掉窗口以后 daemon 还在后台，用 `codex app-server daemon stop` 停掉）、dsh、pi。用 `Get-Process kopitiam` 确认一个都不剩，再运行另一种的 `uv tool install`。开着的话 uv 删不掉旧环境，会中途报「拒绝访问」，留下一个用不了的半成品：`No module named 'kopitiam'`，连 Claude Code 的 hook 都会报错。这时关掉它们，再运行一次同一条命令就好。
+
 可执行文件装在 `C:\Users\<你>\.local\bin\kopitiam.exe`。**各 agent 的配置里要写这个绝对路径**（桌面版启动时不一定带有用户的 PATH）。
 
 数据目录：`~/.kopitiam`（`chat.db` + `files/`）。可用环境变量 `KOPITIAM_HOME` 指到别处（测试时用）。
@@ -32,6 +34,8 @@ uv tool upgrade kopitiam
 ```
 
 从 GitHub 装的会拉 master 上最新的提交（装的时候指定了标签或提交的，要换新地址重新 `uv tool install`）。editable 安装的源码改动本来就立即生效，这条命令会按 `pyproject.toml` 补装新加的依赖。
+
+升级不用先关程序（uv 在原来的环境里改，不删目录）。从 GitHub 装的，agent 开着时最后可能报 `Failed to install entrypoint … 另一个程序正在使用此文件`：新代码其实已经装好了，换不掉的 `kopitiam.exe` 只是个启动器，每个版本都一样，不用管。等那些程序都关了再运行一次，会显示 `Nothing to upgrade`。（在 uv 0.10.6 上验证过。）
 
 更新以后，**已经在跑的进程还是旧代码**，要重开才用上新的：
 1. **重启 `kopitiam web`**（或 `kopitiam wake`）：自动唤醒在它里面跑。不重启的话，新版本改过的唤醒方式会对不上（比如 dsh 的会话叫不醒）。
