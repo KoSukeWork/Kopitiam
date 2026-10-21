@@ -235,6 +235,57 @@ def test_pair_send_receive_forward_unpair(two_nodes, home):
     assert _wait(lambda: B("/api/team")["peers"] == [])
 
 
+def test_joiner_without_team_connection_is_told_and_gets_messages_after_enabling(two_nodes):
+    # 「我去加别人」的一方没开团队连接也能配对，但对方发给它的消息会一直排队：配对时就提醒，原因也写清楚
+    a, b = two_nodes
+    A = lambda path, p=None: _req(a["base"], a["token"], path, p)  # noqa: E731
+    B = lambda path, p=None: _req(b["base"], b["token"], path, p)  # noqa: E731
+    A("/api/team/me", {"name": "alice"})
+    B("/api/team/me", {"name": "bob"})
+    A("/api/team/share", {"on": False})
+    out = A("/api/team/join", {"address": b["peer"], "code": B("/api/team/code", {})["code"]})
+    assert out["ok"] and "你还没打开「团队连接」" in out["message"]
+
+    assert B("/api/send", {"text": "在吗", "to": ["alice"]})["ok"]
+    err = _wait(lambda: [d["error"] for d in B("/api/state?after=0")["deliveries"].values() if d["error"]])
+    assert err and err[0] == peer.NOT_SHARING  # B 的网页上「等待送达」下面写着原因
+
+    A("/api/team/share", {"on": True})
+    a["srv"].peer_service.ping_all()  # A 的后台线程每 20 秒 ping 一次，带上新端口；B 记下以后马上重发
+    got = _wait(lambda: [m for m in A("/api/state?after=0")["messages"] if m["text"] == "在吗"])
+    assert got and got[0]["sender"] == "bob"
+
+
+def test_peer_port_explains_why_it_rejects(two_nodes):
+    a, b = two_nodes
+    A = lambda path, p=None: _req(a["base"], a["token"], path, p)  # noqa: E731
+    B = lambda path, p=None: _req(b["base"], b["token"], path, p)  # noqa: E731
+    A("/api/team/join", {"address": b["peer"], "code": B("/api/team/code", {})["code"]})
+    secret = db.list_peers()[0]["secret"]
+
+    def ping(node, ts, key):
+        body = b"{}"
+        req = urllib.request.Request(f"http://{b['peer']}/peer/ping", data=body, method="POST", headers={
+            "Content-Type": "application/json", "X-Kopitiam-Node": node, "X-Kopitiam-Time": str(ts),
+            "X-Kopitiam-Sig": peer.sign(key, "POST", "/peer/ping", str(ts), body), "X-Kopitiam-Port": "0"})
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            urllib.request.urlopen(req, timeout=10)
+        return json.loads(ei.value.read())["error"]
+
+    now = int(time.time())
+    assert "没有你的配对记录" in ping(uuid.uuid4().hex, now, secret)
+    assert ping(db.node_id(), now - 600, secret).startswith("两台电脑的时间相差 10 分钟")
+    assert "签名不对" in ping(db.node_id(), now, "wrong-secret")
+
+
+def test_unreachable_says_what_to_check(home):
+    with pytest.raises(peer.PeerError) as ei:  # 端口上没有程序：被拒绝
+        peer.call(f"127.0.0.1:{_free_port()}", "GET", "/peer/hello", timeout=5)
+    assert "没有程序在这个端口上等着" in str(ei.value)
+    timeout = peer._unreachable("10.0.0.9:25675", urllib.error.URLError(TimeoutError("timed out")))
+    assert timeout.startswith("连不上 10.0.0.9:25675") and "防火墙" in timeout
+
+
 def test_peer_port_rejects_unsigned_and_wrong_content_type(two_nodes):
     a, b = two_nodes
     url = f"http://{b['peer']}/peer/message"

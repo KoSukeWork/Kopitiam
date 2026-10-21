@@ -136,11 +136,26 @@ def call(address: str, method: str, path: str, payload: dict | None = None, *, r
             msg = None
         raise PeerError(msg or f"对方拒绝了请求（HTTP {e.code}）") from None
     except (urllib.error.URLError, OSError) as e:
-        raise PeerError(f"连不上 {address}（{getattr(e, 'reason', e)}）") from None
+        raise PeerError(_unreachable(address, e)) from None
     try:
         return json.loads(data or b"{}")
     except ValueError:
         raise PeerError("对方返回的不是 kopitiam 的数据") from None
+
+
+def _unreachable(address: str, e: BaseException) -> str:
+    """连不上对方：按错误类型说一句最可能的原因，用户照着去对方电脑上查。"""
+    reason = getattr(e, "reason", e)
+    if isinstance(reason, ConnectionRefusedError):
+        hint = "对方电脑在，但没有程序在这个端口上等着：对方的 kopitiam web 没开，或者没打开「团队连接」"
+    elif isinstance(reason, TimeoutError) or "timed out" in str(reason):
+        hint = "等不到回应：多半是被对方电脑的防火墙挡住了，也可能对方不在这个网络里、或者关机了"
+    else:
+        hint = ""
+    return f"连不上 {address}（{reason}）" + (f"：{hint}" if hint else "")
+
+
+NOT_SHARING = "对方没打开「团队连接」，收不到消息：请对方在网页左栏「团队」旁边点 ＋，打开「团队连接」"
 
 
 def _staged(peer_node: str, uid: str, i: int) -> Path:
@@ -281,6 +296,8 @@ class PeerService:
 
     def ping_all(self) -> None:
         for p in db.list_peers():
+            if p["address"].endswith(":0"):
+                continue  # 对方没开团队连接，连不进去；等它来 ping 我时带上新端口
             try:
                 r = call(p["address"], "POST", "/peer/ping", {}, secret=p["secret"], my_port=self.bound_port, timeout=5)
                 db.peer_seen(p["id"], name=str(r.get("name") or "")[:32] or None)
@@ -291,6 +308,9 @@ class PeerService:
         me = db.node_id()
         for item in db.due_outbox():
             uid = f"{me}:{item['message_id']}"
+            if item["address"].endswith(":0"):  # 配对时对方没开团队连接（端口 0）
+                db.outbox_retry(item["ob_id"], item["tries"], NOT_SHARING)
+                continue
             try:
                 metas = []
                 for i, f in enumerate(item["files"]):
@@ -354,10 +374,19 @@ class _PeerHandler(BaseHTTPRequestHandler):
         return self.rfile.read(n)
 
     def _auth(self, body: bytes):
+        # 拒绝的原因写清楚：对方（发送的一方）网页上「等待送达」下面会显示这句话
         peer = db.peer_by_node(self.headers.get("X-Kopitiam-Node", ""))
-        if peer is None or not verify(peer["secret"], self.command, self.path,
-                                      self.headers.get("X-Kopitiam-Time"), body, self.headers.get("X-Kopitiam-Sig")):
-            self._err(403, "没有配对，或者签名不对")
+        if peer is None:
+            self._err(403, "对方那边没有你的配对记录（可能已经解除了配对）：请重新配对")
+            return None
+        ts = self.headers.get("X-Kopitiam-Time") or ""
+        if ts.isdigit() and abs(time.time() - int(ts)) > PEER_CLOCK_SKEW:
+            minutes = round(abs(time.time() - int(ts)) / 60)
+            self._err(403, f"两台电脑的时间相差 {minutes} 分钟（最多允许 {PEER_CLOCK_SKEW // 60} 分钟）："
+                           "请在两台电脑的「设置 → 时间和语言」里都打开「自动设置时间」")
+            return None
+        if not verify(peer["secret"], self.command, self.path, ts, body, self.headers.get("X-Kopitiam-Sig")):
+            self._err(403, "签名不对（两边保存的配对密钥不一致）：请解除配对，再重新配对")
             return None
         # 签名通过：记下对方现在的地址（对方 IP 变了也能自动跟上；端口 0 表示对方没开团队连接）
         port = self.headers.get("X-Kopitiam-Port", "0")

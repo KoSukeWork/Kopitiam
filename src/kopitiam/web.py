@@ -343,7 +343,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _t_join(self, data: dict) -> dict:
         alias = self.service.join(str(data.get("address") or ""), str(data.get("code") or ""))
-        return {"message": f"已配对：{alias}", "alias": alias}
+        msg = f"已配对：{alias}"
+        if not self.service.sharing:  # 我去加别人不需要开团队连接，但别人连不进来，发给我的消息会一直排队
+            msg += "。你还没打开「团队连接」，对方发给你的消息收不到：打开上面的开关就行"
+        return {"message": msg, "alias": alias}
 
     def _t_remove(self, data: dict) -> dict:
         name = str(data.get("name") or "")
@@ -647,6 +650,7 @@ details.offline > summary:hover { color:var(--ink-2); }
 .agent:hover .wk, .agent.active .wk { background:var(--hover); box-shadow:0 0 0 1.5px var(--hover); }
 .agent.active .wk { background:var(--panel); box-shadow:0 0 0 1.5px var(--panel); }
 .agent .cwd { margin-top:1px; font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.agent .cwd.warn { color:#e5a00d; }
 /* 成员行右边的按钮（加到「发给」、归档）：能悬停的设备上平时不占宽度，名字能完整显示 */
 .agent .ops { flex-shrink:0; display:flex; gap:4px; }
 .agent .act {
@@ -729,7 +733,10 @@ main.page > #convbar, main.page > #conn, main.page > #stream, main.page > #compo
 .msg:hover .fwdbtn, .meta .fwdbtn:focus-visible { opacity:1; }
 .meta .fwdbtn:hover { color:var(--accent); background:var(--hover); }
 @media (hover:none) { .meta .fwdbtn { opacity:1; } }
-.dstate { display:flex; align-items:center; gap:4px; margin-top:4px; font-size:11.5px; color:var(--muted); }
+.dstate { display:flex; flex-wrap:wrap; align-items:center; gap:4px; margin-top:4px; font-size:11.5px; color:var(--muted); }
+.dstate .derr { flex-basis:100%; color:#e5a00d; line-height:1.5; overflow-wrap:anywhere; }
+.msg.mine .dstate { justify-content:flex-end; }
+.msg.mine .dstate .derr { text-align:right; }
 .dstate.sent { color:var(--ok); }
 
 /* ---- 弹窗 ---- */
@@ -1319,6 +1326,8 @@ function setDelivery(id, d) {
   box.className = "dstate " + (sent ? "sent" : "pending");
   box.title = sent ? "" : (d.error ? "上次失败：" + d.error + "（会自动重试）" : "对方不在线时会自动重试");
   box.replaceChildren(icon(sent ? "check" : "clock", 12), el("span", "", sent ? "已送达" : "等待送达…"));
+  // 失败原因直接写出来（以前只在悬停提示里，很容易看不到）
+  if (!sent && d.error) box.append(el("span", "derr", "上次失败：" + d.error + "（会自动重试）"));
 }
 
 function logoMark(size) {
@@ -1522,10 +1531,13 @@ function agentRow(a) {
   const line1 = el("div", "line1");
   line1.append(el("span", "name", a.name));
   if (a.name !== "user") line1.append(el("span", "kind", kindLabel(a.kind)));
+  // 同事的地址端口是 0：配对时对方没开团队连接，发给他的消息送不到
+  const noShare = a.kind === "remote" && a.cwd.endsWith(":0");
   const sub = a.name === "user" ? "你 · 网页"
-    : a.kind === "remote" ? ((a.peer_name && a.peer_name !== a.name ? a.peer_name + " · " : "") + (a.online ? "在线" : "离线") + " · " + a.cwd)
+    : a.kind === "remote" ? ((a.peer_name && a.peer_name !== a.name ? a.peer_name + " · " : "")
+        + (noShare ? "没开团队连接，收不到消息 · " + a.cwd.slice(0, -2) : (a.online ? "在线" : "离线") + " · " + a.cwd))
     : a.title ? a.title + " · " + a.cwd : a.cwd;
-  info.append(line1, el("div", "cwd", sub));
+  info.append(line1, el("div", "cwd" + (noShare ? " warn" : ""), sub));
   const av = avatar(a.name, a.online, false, a.kind);
   if ((talking[a.name] || 0) > Date.now()) av.classList.add("talk");
   if ((woke[a.name] || 0) > Date.now()) av.classList.add("woke");

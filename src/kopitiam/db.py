@@ -742,7 +742,8 @@ def peer_seen(peer_id: int, *, address: str | None = None, name: str | None = No
         try:
             row = c.execute("SELECT * FROM peers WHERE id=?", (peer_id,)).fetchone()
             if row is not None:
-                if not peer_online(row):
+                # 对方刚上线，或者地址变了（比如刚打开团队连接，端口从 0 变成真的）：排队的消息马上重发
+                if not peer_online(row) or (address is not None and address != row["address"]):
                     c.execute("UPDATE outbox SET next_try=0 WHERE peer_id=? AND status='pending'", (peer_id,))
                 c.execute("UPDATE peers SET last_ok=?, address=COALESCE(?, address), name=COALESCE(?, name)"
                           " WHERE id=?", (time.time(), address, name, peer_id))
