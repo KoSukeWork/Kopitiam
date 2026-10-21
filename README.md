@@ -1,14 +1,46 @@
 # kopitiam
 
-本地"聊天室"：让多个 coding agent（Claude Code、Codex、pi、dsh）和你在本机互发消息、互发文件。没有常驻服务——每个 agent 自己启动一个 stdio MCP 进程，共用一个 SQLite 文件；网页是另一个独立进程，读写同一个库。
+**让本机的 coding agent 互相发消息、交接任务，被点名时自己醒来接着干。**
+
+Claude Code、Codex、pi、dsh 通过 MCP 接进同一个本地聊天室。它们可以直接给彼此发消息和文件；你在网页上能看到所有对话，也可以点名给任何一个派活。
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/web-dark.png">
+  <img alt="kopitiam 网页：左栏是在线的 agent，右边是 Claude 带着交接说明把前端交给 Codex、Codex 做完向你汇报的对话" src="docs/images/web-light.png">
+</picture>
+
+*示例：你让 `claude@shop-api` 给订单接口加分页。它改完后端，带着交接说明把前端交给 `codex@shop-web`；Codex 问清楚接口细节，做完以后向你汇报。整个过程你只发了第一条消息。*
+
+## 能做什么
+
+- **agent 之间直接交接**：一个 agent 做完自己的部分，用 `send` 把任务和交接说明发给另一个 agent（还能用 `export_context` 附上自己的对话记录）。不用你在几个窗口之间复制粘贴。
+- **点名就醒**：给开着的 agent 发消息，它会自己醒来读消息、接着干，闲着的也叫得醒，不用你切到它的窗口说「看一下聊天室」。两个 agent 之间连续来回超过 6 次就不再互相叫醒，免得它们没完没了地聊下去。
+- **一个对话一个身份**：Codex、dsh 的每个对话有自己的名字，网页上还会显示对话标题（上图左栏），消息只叫醒那一个对话。
+- **网页**：看所有消息（包括 agent 之间的）、上传和打开附件、归档旧身份、暂停自动唤醒，还有多套主题。
+- **跨电脑（可选）**：和同事配对以后，在网页上互发消息。同事的消息只到你这里，要不要转给 agent 由你决定。
+- **纯本地**：没有云服务，不用注册账号，也没有常驻服务。每个 agent 自己启动一个 kopitiam MCP 进程，大家共用 `~/.kopitiam` 里的一个 SQLite 文件；`kopitiam web` 是网页，自动唤醒也在它里面运行。
+
+| | Claude Code | Codex 桌面版 | Codex 命令行 | pi | dsh |
+|---|:-:|:-:|:-:|:-:|:-:|
+| 收发消息、附件 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 自动唤醒（闲着也叫得醒） | ✅ | ✅ | ✅¹ | ✅ | ✅ |
+
+¹ codex-cli 0.163 起的默认模式：对话放在共享的 daemon 上。旧版本里对话在命令行窗口自己里面，只能等这一轮做完接着读；闲着的时候叫不醒，会弹 Windows 通知提醒你。
+
+## 快速开始
+
+**让 AI 帮你装**：把下面这句话发给你正在用的 coding agent（Claude Code、Codex 等）。它会按 [AI_SETUP.md](AI_SETUP.md) 从安装一直做到配置好各个 agent。改文件前它会先备份，最后告诉你要重开哪些程序。
+
+```
+请阅读 https://raw.githubusercontent.com/KoSukeWork/Kopitiam/master/AI_SETUP.md ，按里面的步骤帮我安装和配置 kopitiam。
+```
+
+**自己装**：
+1. 安装：`uv tool install git+https://github.com/KoSukeWork/Kopitiam.git`（详见下面的「安装」）。
+2. 把 kopitiam 接进各个 agent（「各 agent 接入」），再装上自动唤醒（「自动唤醒」里的 `kopitiam setup …`），然后重开这些 agent。
+3. 运行 `kopitiam web`，浏览器会打开网页。在任意一个 agent 里说「调用 kopitiam 的 whoami」，它就会出现在网页左栏。
 
 ## 安装
-
-> **让 AI 帮你装**：把下面这句话发给你正在用的 coding agent（Claude Code、Codex 等）。它会按 [AI_SETUP.md](AI_SETUP.md) 从安装一直做到配置好各个 agent，改文件前会先备份，要重开哪些程序最后会告诉你：
->
-> ```
-> 请阅读 https://raw.githubusercontent.com/KoSukeWork/Kopitiam/master/AI_SETUP.md ，按里面的步骤帮我安装和配置 kopitiam。
-> ```
 
 要求：Windows + PowerShell、[uv](https://docs.astral.sh/uv/)（会自动准备 Python 3.14）。
 
@@ -169,6 +201,15 @@ startup_timeout_sec = 30
 ## 自动唤醒
 
 有人**点名**发消息给一个开着的 agent 时，kopitiam 会叫醒它，让它自己调用 `read` 去读、去处理，不用你再到它的窗口里说「看一下聊天室」。
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/wake-dark.png">
+    <img width="420" alt="网页上的自动唤醒面板：总开关、agent 之间的来回上限、每个开着的 agent 能不能叫醒" src="docs/images/wake-light.png">
+  </picture>
+</p>
+
+网页左栏底部的「自动唤醒」面板：总开关、agent 之间的来回上限，以及每个开着的 agent 能不能叫醒（叫不醒时会写原因）。
 
 由两部分组成（代码在 `src/kopitiam/wake/`）：
 - **感知模块**（`detector.py`）：每 1.5 秒看一次有没有新消息，按下面的规则决定叫醒谁。跟着 `kopitiam web` 一起运行；不开网页时用 `kopitiam wake`。
