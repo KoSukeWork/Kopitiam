@@ -277,6 +277,15 @@ def test_peer_port_explains_why_it_rejects(two_nodes):
     assert ping(db.node_id(), now - 600, secret).startswith("两台电脑的时间相差 10 分钟")
     assert "签名不对" in ping(db.node_id(), now, "wrong-secret")
 
+    # A 自己定时联系 B 被拒绝时，A 的团队面板上也看得到原因（以前悄悄失败）
+    real = time.time
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(time, "time", lambda: real() - 600)  # A 的时钟慢了 10 分钟
+        a["srv"].peer_service.ping_all()
+    assert A("/api/team")["peers"][0]["error"].startswith("两台电脑的时间相差 10 分钟")
+    a["srv"].peer_service.ping_all()
+    assert A("/api/team")["peers"][0]["error"] is None  # 时间对了就好了
+
 
 def test_unreachable_says_what_to_check(home):
     with pytest.raises(peer.PeerError) as ei:  # 端口上没有程序：被拒绝

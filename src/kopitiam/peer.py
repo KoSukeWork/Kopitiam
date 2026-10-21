@@ -175,6 +175,7 @@ class PeerService:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._worker: threading.Thread | None = None
+        self.ping_errors: dict[int, str] = {}  # 同事 id → 最近一次定时联系失败的原因（成功就删掉）
 
     @property
     def sharing(self) -> bool:
@@ -295,14 +296,18 @@ class PeerService:
                 pass
 
     def ping_all(self) -> None:
+        """定时联系每个同事：顺便告诉对方我的团队端口。失败原因记下来给团队面板显示
+        （以前不显示：比如两台电脑时间差太多，配对能成功、之后全被拒绝，哪边都看不出来）。"""
         for p in db.list_peers():
             if p["address"].endswith(":0"):
-                continue  # 对方没开团队连接，连不进去；等它来 ping 我时带上新端口
+                self.ping_errors[p["id"]] = NOT_SHARING  # 连不进去；等对方来 ping 我时带上新端口
+                continue
             try:
                 r = call(p["address"], "POST", "/peer/ping", {}, secret=p["secret"], my_port=self.bound_port, timeout=5)
                 db.peer_seen(p["id"], name=str(r.get("name") or "")[:32] or None)
-            except PeerError:
-                pass
+                self.ping_errors.pop(p["id"], None)
+            except PeerError as e:
+                self.ping_errors[p["id"]] = str(e)
 
     def deliver_due(self) -> None:
         me = db.node_id()

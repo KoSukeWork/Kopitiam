@@ -326,7 +326,8 @@ class _Handler(BaseHTTPRequestHandler):
             "share": {"on": svc.sharing, "port": svc.bound_port or svc.port, "host": svc.host,
                       "addresses": peer.local_addresses()},
             "code": svc.code_status(),
-            "peers": [{"alias": p["alias"], "name": p["name"], "address": p["address"], "online": db.peer_online(p)}
+            "peers": [{"alias": p["alias"], "name": p["name"], "address": p["address"], "online": db.peer_online(p),
+                       "error": svc.ping_errors.get(p["id"])}
                       for p in db.list_peers()],
         }
 
@@ -771,6 +772,7 @@ main.page > #convbar, main.page > #conn, main.page > #stream, main.page > #compo
 .prow .name { font-weight:600; }
 .prow .cwd { font-size:12px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .prow .cwd.warn { color:#e5a00d; }
+.prow .perr { margin-top:2px; font-size:12px; line-height:1.5; color:#e5a00d; overflow-wrap:anywhere; }
 .prow .line1 { display:flex; align-items:center; gap:6px; }
 .rounds { flex:0 0 84px; min-width:0; }
 .fwd-preview { margin:8px 0 4px; padding:10px 12px; border-left:3px solid var(--line); border-radius:6px; background:var(--hover); font-size:13px; color:var(--ink-2); white-space:pre-wrap; word-break:break-word; }
@@ -1176,6 +1178,7 @@ async function renderTeam(body) {
     const info = el("div", "info");
     info.append(el("div", "name", p.alias),
       el("div", "cwd", (p.name !== p.alias ? p.name + " · " : "") + p.address + " · " + (p.online ? "在线" : "离线")));
+    if (p.error) info.append(el("div", "perr", "联系不上：" + p.error));
     const rm = el("button", "btn danger", "解除配对");
     rm.onclick = async () => {
       if (!confirm("和 " + p.alias + " 解除配对？聊天记录会保留，之后可以重新配对。")) return;
@@ -1191,7 +1194,7 @@ async function renderTeam(body) {
   s5.append(el("div", "mnote",
     "同事发来的消息只会到你这里，不会自动交给 agent；需要时点消息上的「转发」。" +
     "消息在网络上是明文：同一个局域网直接用，跨网络请用 Tailscale 这类自带加密的组网工具。" +
-    "Windows 第一次开启团队连接时可能弹出防火墙提示，选「允许专用网络」。"));
+    "Windows 第一次开启团队连接时可能弹出防火墙提示，选「允许」；两台电脑的时间要准（相差超过 5 分钟会被拒绝）。"));
   body.append(s1, s2, s3, s4, s5);
 }
 
