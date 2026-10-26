@@ -5,6 +5,9 @@
 - 感知模块决定叫醒它时，wake() 把这次的提示写进信号文件。
 - FileChanged hook（kopitiam hook claude-wake，asyncRewake）：把提示写到 stderr，退出码 2——
   Claude Code 收到后，会话空闲也会马上开始处理。
+- CwdChanged hook（kopitiam hook claude-cwd）：再交一次同一个 watchPaths。Claude Code 换工作目录时，
+  会用 CwdChanged hook 返回的 watchPaths 替换掉 SessionStart 给的（2.1.310 实测），没有这个 hook，
+  会话里 cd 一次就再也叫不醒了。
 
 CLAUDE_PID 是 Claude Code 给子进程设的环境变量，等于 MCP 进程认领身份时找到的 agent 进程（db.host_pid），
 所以「agent 的 pid」就能对上「哪个信号文件」（见 signals.py）。hook 进程里只用标准库 + psutil，启动要快。
@@ -51,17 +54,28 @@ def _claude_pid(env) -> int | None:
     return None
 
 
-def hook_start(env=os.environ) -> str:
-    """SessionStart：返回给 Claude Code 的 JSON（stdout）。拿不到 pid 就什么都不做。"""
+def _watch(event: str, env, *, cleanup: bool = False) -> str:
+    """建信号文件，返回让 Claude Code 监视它的 JSON（stdout）。拿不到 pid 就什么都不做。"""
     pid = _claude_pid(env)
     if pid is None:
         return ""
     wake_dir().mkdir(parents=True, exist_ok=True)
-    signals.cleanup()
+    if cleanup:
+        signals.cleanup()
     sig = signal_path(pid)
     if not sig.exists():
         sig.write_text("", encoding="utf-8")
-    return json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "watchPaths": [str(sig)]}})
+    return json.dumps({"hookSpecificOutput": {"hookEventName": event, "watchPaths": [str(sig)]}})
+
+
+def hook_start(env=os.environ) -> str:
+    """SessionStart：顺便清掉已经关掉的 agent 留下的信号文件。"""
+    return _watch("SessionStart", env, cleanup=True)
+
+
+def hook_cwd(env=os.environ) -> str:
+    """CwdChanged：换了工作目录，监视列表被换掉了，再交一次信号文件。"""
+    return _watch("CwdChanged", env)
 
 
 def hook_wake(stdin_text: str, env=os.environ) -> tuple[int, str]:
@@ -95,6 +109,7 @@ def hook_entries(exe: str) -> dict:
         "SessionStart": {"hooks": [{"type": "command", "command": exe, "args": ["hook", "claude-start"]}]},
         "FileChanged": {"hooks": [{"type": "command", "command": exe, "args": ["hook", "claude-wake"],
                                    "asyncRewake": True}]},
+        "CwdChanged": {"hooks": [{"type": "command", "command": exe, "args": ["hook", "claude-cwd"]}]},
     }
 
 
@@ -107,5 +122,5 @@ def _is_ours(group) -> bool:
 
 
 def install(settings: Path, exe: str, *, remove: bool = False) -> str:
-    """只增删 kopitiam 自己的两个 hook，不动别的；改之前先备份成 settings.json.bak。"""
+    """只增删 kopitiam 自己的 hook，不动别的；改之前先备份成 settings.json.bak。"""
     return hookfile.merge(settings, hook_entries(exe), _is_ours, remove=remove)

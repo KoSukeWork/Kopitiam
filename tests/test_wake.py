@@ -231,6 +231,15 @@ def test_claude_hook_ignores_other_files_and_unlink(home):
     assert claude.hook_wake(json.dumps({"file_path": str(sig), "event": "change"}), env) == (2, "hello")
 
 
+def test_claude_cwd_hook_watches_the_same_signal_again(home):
+    env = {"CLAUDE_PID": str(os.getpid())}
+    start = json.loads(claude.hook_start(env))["hookSpecificOutput"]
+    claude.signal_path(os.getpid()).unlink()  # 万一不见了：换目录时补建
+    cwd = json.loads(claude.hook_cwd(env))["hookSpecificOutput"]
+    assert cwd == {"hookEventName": "CwdChanged", "watchPaths": start["watchPaths"]}
+    assert claude.signal_path(os.getpid()).exists()
+
+
 def test_claude_check_and_failed_wake_can_retry(room):
     a, b, user = room
     _send(user, "A")
@@ -279,6 +288,7 @@ def test_install_keeps_other_settings_and_is_idempotent(home):
     wake = data["hooks"]["FileChanged"]
     assert len(wake) == 1 and wake[0]["hooks"][0]["asyncRewake"] is True
     assert wake[0]["hooks"][0]["args"] == ["hook", "claude-wake"]
+    assert data["hooks"]["CwdChanged"][0]["hooks"][0]["args"] == ["hook", "claude-cwd"]
     assert (settings.parent / "settings.json.bak").exists()
 
     claude.install(settings, exe, remove=True)
@@ -289,7 +299,8 @@ def test_install_keeps_other_settings_and_is_idempotent(home):
 def test_install_creates_settings_file(home):
     settings = home / "new" / "settings.json"
     claude.install(settings, r"C:\x\kopitiam.exe")
-    assert set(json.loads(settings.read_text(encoding="utf-8"))["hooks"]) == {"SessionStart", "FileChanged"}
+    assert set(json.loads(settings.read_text(encoding="utf-8"))["hooks"]) == {"SessionStart", "FileChanged",
+                                                                               "CwdChanged"}
 
 
 # ---- 网页：总开关、来回上限、每个 agent 的开关 ----

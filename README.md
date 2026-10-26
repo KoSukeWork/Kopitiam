@@ -227,7 +227,7 @@ startup_timeout_sec = 30
 **Claude Code 安装**（只做一次）：
 
 ```powershell
-kopitiam setup claude          # 往 ~/.claude/settings.json 加两个 hook，原文件备份成 settings.json.bak
+kopitiam setup claude          # 往 ~/.claude/settings.json 加几个 hook，原文件备份成 settings.json.bak
 kopitiam setup claude --print  # 只看要加什么，不改文件
 kopitiam setup claude --remove # 删掉
 ```
@@ -236,7 +236,9 @@ kopitiam setup claude --remove # 删掉
 - `SessionStart` hook 建一个信号文件 `~/.kopitiam/wake/claude-<进程号>.signal`，让 Claude Code 监视它（`watchPaths`）。进程号用的是 Claude Code 传给子进程的 `CLAUDE_PID`，和 MCP 认领身份时找到的 agent 进程是同一个。
 - 要叫醒时，感知模块往信号文件里写这次的提示。
 - `FileChanged` hook（`asyncRewake: true`）把提示输出到 stderr，并以退出码 2 结束。Claude Code 收到后，**会话空闲也会马上开始处理**；会话正忙的话，等这一轮做完再处理。
+- `CwdChanged` hook 再交一次同一个信号文件。Claude Code 换工作目录（会话里 `cd` 进子文件夹）时，会用这个 hook 返回的 `watchPaths` **替换**掉 `SessionStart` 给的；以前没装这个 hook，cd 一次就再也叫不醒了，要重开会话才恢复（2.1.310 上查到的）。
 - 在 Claude Code 2.1.303 上验证过（空闲的会话连续被叫醒两次）。`asyncRewake` 是比较新的 hook 选项，太旧的 Claude Code 可能不支持。
+- 更新 kopitiam 以后，如果 `kopitiam setup claude --print` 里有你 settings.json 里没有的 hook，就再运行一次 `kopitiam setup claude`，然后重开 Claude Code。
 
 **pi 安装**（只做一次）：
 

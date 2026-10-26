@@ -42,7 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="dsh：装进哪个 profile（可以写多次；默认是已经配了 kopitiam MCP 的那些）")
 
     ph = sub.add_parser("hook", help="给 agent 的 hook 调用（不用手动运行）")
-    ph.add_argument("event", choices=["claude-start", "claude-wake", "codex-start", "codex-busy", "codex-stop"])
+    ph.add_argument("event", choices=["claude-start", "claude-cwd", "claude-wake",
+                                      "codex-start", "codex-busy", "codex-stop"])
 
     pe = sub.add_parser("export", help="调试用：导出某个 agent 的对话记录")
     pe.add_argument("--agent", required=True, choices=["claude", "codex", "pi", "dsh"])
@@ -188,8 +189,8 @@ def _run_hook(event: str) -> int:
             return 0
 
         from .wake import claude
-        if event == "claude-start":
-            out = claude.hook_start()
+        if event in ("claude-start", "claude-cwd"):
+            out = claude.hook_start() if event == "claude-start" else claude.hook_cwd()
             if out:
                 sys.stdout.write(out + "\n")
             return 0
