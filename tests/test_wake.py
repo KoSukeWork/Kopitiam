@@ -174,6 +174,28 @@ def test_chain_resets_after_idle_gap(room):
     assert len(_ping_pong(a, b, 2)) == 2
 
 
+def _user_at(agent_id: int):
+    with closing(db.connect()) as c:
+        return c.execute("SELECT user_at FROM wake_state WHERE agent_id=?", (agent_id,)).fetchone()[0]
+
+
+def test_user_typing_in_agent_window_resets_the_chain(room):
+    a, b, user = room
+    detector.set_max_rounds(1)
+    assert [w[0] for w in _ping_pong(a, b, 4)] == ["B", "A"]
+    assert _ping_pong(a, b, 2) == []  # 没人管：一直不叫
+    ago = (datetime.now() - timedelta(minutes=10)).isoformat(timespec="seconds")
+    with closing(db.connect()) as c:
+        c.execute("UPDATE messages SET created_at=?", (ago,))  # 还在 WAKE_CHAIN_IDLE 以内，本来算同一串
+
+    detector.user_spoke("claude", pid=os.getpid())  # 用户直接在 A（Claude）的窗口里打了字
+    assert time.time() - _user_at(a) < 5 and _user_at(b) is None  # B 是 codex，进程号一样也不算它
+    with closing(db.connect()) as c:  # 消息时间只精确到秒：把打字挪到一分钟前，免得和下面的消息落在同一秒
+        c.execute("UPDATE wake_state SET user_at=? WHERE agent_id=?", (time.time() - 60, a))
+    # A、B 之间重新计数：又能叫醒 2 条，超过上限再停
+    assert [w[0] for w in _ping_pong(a, b, 4)] == ["B", "A"]
+
+
 def test_user_message_wakes_even_when_pair_is_over_limit(room):
     a, b, user = room
     detector.set_max_rounds(0)
@@ -229,6 +251,22 @@ def test_claude_hook_ignores_other_files_and_unlink(home):
     assert claude.hook_wake(json.dumps({"file_path": str(sig), "event": "unlink"}), env) == (0, "")
     assert claude.hook_wake("not json", env) == (0, "")
     assert claude.hook_wake(json.dumps({"file_path": str(sig), "event": "change"}), env) == (2, "hello")
+
+
+def test_claude_prompt_hook_only_counts_what_the_user_typed(room):
+    a, b, user = room
+    env = {"CLAUDE_PID": str(os.getpid())}
+
+    def prompt(**kw):
+        claude.hook_prompt(json.dumps({"hook_event_name": "UserPromptSubmit", **kw}), env)
+
+    prompt(prompt="<task-notification>后台任务做完了</task-notification>", source="system")
+    prompt(prompt=detector.wake_text(["B"], 1))  # 老版本没有 source：kopitiam 的唤醒提示也不算
+    prompt(prompt="  ", source="user")
+    claude.hook_prompt("not json", env)
+    assert _user_at(a) is None
+    prompt(prompt="继续", source="user")
+    assert time.time() - _user_at(a) < 5
 
 
 def test_claude_cwd_hook_watches_the_same_signal_again(home):
@@ -289,6 +327,8 @@ def test_install_keeps_other_settings_and_is_idempotent(home):
     assert len(wake) == 1 and wake[0]["hooks"][0]["asyncRewake"] is True
     assert wake[0]["hooks"][0]["args"] == ["hook", "claude-wake"]
     assert data["hooks"]["CwdChanged"][0]["hooks"][0]["args"] == ["hook", "claude-cwd"]
+    typed = data["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+    assert typed["args"] == ["hook", "claude-prompt"] and typed["async"] is True  # 不拖慢用户发消息
     assert (settings.parent / "settings.json.bak").exists()
 
     claude.install(settings, exe, remove=True)
@@ -300,7 +340,7 @@ def test_install_creates_settings_file(home):
     settings = home / "new" / "settings.json"
     claude.install(settings, r"C:\x\kopitiam.exe")
     assert set(json.loads(settings.read_text(encoding="utf-8"))["hooks"]) == {"SessionStart", "FileChanged",
-                                                                               "CwdChanged"}
+                                                                               "CwdChanged", "UserPromptSubmit"}
 
 
 # ---- 网页：总开关、来回上限、每个 agent 的开关 ----
@@ -630,6 +670,16 @@ def test_codex_stop_hook_hands_off_to_the_right_thread(codex_room):
     out = json.loads(codex.hook_stop(json.dumps({"session_id": "thread-1", "stop_hook_active": False})))
     assert out["decision"] == "block" and "kopitiam：你有 1 条新消息" in out["reason"]
     assert codex.hook_stop(json.dumps({"session_id": "thread-1"})) == ""  # 同一次只交一次
+
+
+def test_codex_prompt_hook_records_user_typing(codex_room):
+    c, codex = codex_room
+    codex.hook_busy(json.dumps({"session_id": "thread-1", "prompt": detector.wake_text(["A"], 2)}))
+    assert codex._busy("thread-1") is True and _user_at(c) is None  # kopitiam 排进队列的唤醒不算
+    codex.hook_busy(json.dumps({"session_id": "other-thread", "prompt": "hi"}))
+    assert _user_at(c) is None  # 别的对话
+    codex.hook_busy(json.dumps({"session_id": "thread-1", "prompt": "看下 A 说的"}))
+    assert time.time() - _user_at(c) < 5
 
 
 def test_codex_stop_hook_skips_when_already_read(codex_room):

@@ -38,7 +38,7 @@ from .config import (
     valid_name,
 )
 
-SCHEMA_VERSION = "9"  # 2：团队（peers / outbox / messages.remote_uid）；3：自动唤醒（wake_state）；4：agents.thread_id；5：wake_state.woken_pid；6：agents.host；7：agents.archived_at；8：agents.trashed_at；9：agents.title
+SCHEMA_VERSION = "10"  # 2：团队（peers / outbox / messages.remote_uid）；3：自动唤醒（wake_state）；4：agents.thread_id；5：wake_state.woken_pid；6：agents.host；7：agents.archived_at；8：agents.trashed_at；9：agents.title；10：wake_state.user_at
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -112,7 +112,8 @@ CREATE TABLE IF NOT EXISTS wake_state(
 # wake_state：自动唤醒的进度（只有感知模块读写，见 wake/detector.py）。seen_upto = 这个 id 及以前的消息
 #   已经判断过要不要叫醒；woken_upto = 最近一次叫醒时包含的最大消息 id（agent 读到这里之前不重复叫）；
 #   woken_pid = 那次叫醒交给的 agent 进程（agent 换了进程，说明那次多半没送到，可以再叫）；
-#   note = 最近一次的结果，给网页显示；enabled = 用户在网页上关掉某个 agent 的自动唤醒时为 0。
+#   note = 最近一次的结果，给网页显示；enabled = 用户在网页上关掉某个 agent 的自动唤醒时为 0；
+#   user_at = 用户最近一次直接在这个 agent 的窗口里打字的时间（agent 的 UserPromptSubmit hook 记，见 detector.user_spoke）。
 
 
 class _Fail(Exception):
@@ -151,12 +152,12 @@ def init_db() -> None:
         try:
             # v1 → v2：messages 加 remote_uid 列；v3 → v4：agents 加 thread_id 列；v4 → v5：wake_state 加 woken_pid 列；
             # v5 → v6：agents 加 host 列；v6 → v7：agents 加 archived_at 列；v7 → v8：agents 加 trashed_at 列；
-            # v8 → v9：agents 加 title 列
+            # v8 → v9：agents 加 title 列；v9 → v10：wake_state 加 user_at 列
             # （几个进程可能同时启动，重复加列的错误忽略）
             for table, col, typ in (("messages", "remote_uid", "TEXT"), ("agents", "thread_id", "TEXT"),
                                     ("wake_state", "woken_pid", "INTEGER"), ("agents", "host", "TEXT"),
                                     ("agents", "archived_at", "TEXT"), ("agents", "trashed_at", "TEXT"),
-                                    ("agents", "title", "TEXT")):
+                                    ("agents", "title", "TEXT"), ("wake_state", "user_at", "REAL")):
                 if col not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
                     try:
                         c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")

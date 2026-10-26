@@ -3,7 +3,8 @@
 只读写数据库，不管怎么叫醒——那是适配器的事（wake/<kind>.py）。规则：
 1. 只有点名发给它的消息才叫醒；发给所有人的广播不叫醒。
 2. 用户发的（包括转发的）总是叫醒；agent 发给 agent 的，两个 agent 之间连续来回超过上限就不叫醒
-   （消息照常送到）。用户对其中任何一个说话、或者两个 agent 之间 WAKE_CHAIN_IDLE 没说话，就重新计数。
+   （消息照常送到）。用户对其中任何一个说话（在 kopitiam 里发消息，或者直接在它的窗口里打字，见 user_spoke）、
+   或者两个 agent 之间 WAKE_CHAIN_IDLE 没说话，就重新计数。
 3. 叫醒以后，它读到那一批之前，再来新消息不重复叫。但如果 agent 换了进程（重开过）、或者过了 WAKE_RETRY
    还没读，说明那次多半没送到，就从没读的地方再交一次（接收端按叫醒编号去重）。
 4. 没开着的、用户归档了或者放进回收站的 agent 不管；暂停期间和刚开始感知时的旧消息不补叫。
@@ -61,10 +62,32 @@ def set_max_rounds(n: int) -> None:
     db.set_meta("wake_max_rounds", str(n))
 
 
+WAKE_PREFIX = "kopitiam：你有 "
+
+
 def wake_text(senders: list[str], count: int) -> str:
     who = "、".join(senders)
-    return (f"kopitiam：你有 {count} 条新消息（来自 {who}）。请调用 kopitiam 的 read 查看，"
+    return (f"{WAKE_PREFIX}{count} 条新消息（来自 {who}）。请调用 kopitiam 的 read 查看，"
             "按内容处理；需要回复就用 send 发给对方。")
+
+
+def from_user(prompt: object) -> bool:
+    """agent 的 UserPromptSubmit hook 收到的这一句是不是用户打的（kopitiam 交过去的唤醒提示不算）。"""
+    return isinstance(prompt, str) and bool(prompt.strip()) and not prompt.lstrip().startswith(WAKE_PREFIX)
+
+
+def user_spoke(kind: str, *, pid: int | None = None, thread: str | None = None) -> None:
+    """用户直接在 agent 自己的窗口里打了字（agent 的 UserPromptSubmit hook 调用）。
+
+    记下时间：它和别的 agent 之间的来回从这里重新计数，和用户在 kopitiam 里对它说话一样。
+    Claude 按进程号找身份，Codex 按对话 ID 找。
+    """
+    col, value = ("thread_id", thread) if kind == "codex" else ("pid", pid)
+    if not value:
+        return
+    with closing(db.connect()) as c:
+        c.execute(f"UPDATE wake_state SET user_at=? WHERE agent_id IN (SELECT id FROM agents WHERE kind=? AND {col}=?)",
+                  (time.time(), kind, value))
 
 
 def _targets(to_ids: str) -> list[int]:
@@ -78,10 +101,11 @@ def _ts(iso: str) -> float:
         return 0.0
 
 
-def chain_len(c, a: int, b: int, upto: int, user: int, idle: float = WAKE_CHAIN_IDLE) -> int:
+def chain_len(c, a: int, b: int, upto: int, user: int, idle: float = WAKE_CHAIN_IDLE, since: float = 0.0) -> int:
     """到 upto 为止，a 和 b 之间连续互发了几条（点名互发的才算）。
 
-    往回数：遇到用户对 a 或 b 说话（含广播）就停；相邻两条隔了 idle 秒以上也停。
+    往回数：遇到用户对 a 或 b 说话（含广播）就停；相邻两条隔了 idle 秒以上也停；
+    数到 since（用户最近一次直接在 a 或 b 的窗口里打字）以前的也停。
     """
     rows = c.execute(
         "SELECT id, sender_id, to_ids, created_at FROM messages"
@@ -100,7 +124,7 @@ def chain_len(c, a: int, b: int, upto: int, user: int, idle: float = WAKE_CHAIN_
         if other not in t:
             continue  # a 或 b 发给别人、或者广播：不算，也不打断
         ts = _ts(r["created_at"])
-        if prev is not None and prev - ts > idle:
+        if ts < since or (prev is not None and prev - ts > idle):
             break
         n += 1
         prev = ts
@@ -123,10 +147,11 @@ def scan(check: Callable[[dict], str | None]) -> list[WakeCall]:
             top = c.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
             names = {r["id"]: r["name"] for r in c.execute("SELECT id, name FROM agents")}
             agents = c.execute(
-                "SELECT a.*, w.agent_id AS w_id, w.enabled, w.seen_upto, w.woken_upto, w.woken_pid, w.woken_at"
-                " FROM agents a LEFT JOIN wake_state w ON w.agent_id = a.id"
+                "SELECT a.*, w.agent_id AS w_id, w.enabled, w.seen_upto, w.woken_upto, w.woken_pid, w.woken_at,"
+                " w.user_at FROM agents a LEFT JOIN wake_state w ON w.agent_id = a.id"
                 " WHERE a.kind NOT IN ('human', 'remote')"
             ).fetchall()
+            spoke = {a["id"]: a["user_at"] or 0.0 for a in agents}
             for a in agents:
                 if a["w_id"] is None:
                     # 第一次见到：从现在开始算，以前的消息不补叫
@@ -152,7 +177,8 @@ def scan(check: Callable[[dict], str | None]) -> list[WakeCall]:
                     continue
                 ok = [r for r in pending
                       if r["sender_id"] == user
-                      or chain_len(c, a["id"], r["sender_id"], r["id"], user) <= 2 * limit]
+                      or chain_len(c, a["id"], r["sender_id"], r["id"], user,
+                                   since=max(spoke[a["id"]], spoke.get(r["sender_id"], 0.0))) <= 2 * limit]
                 if not ok:
                     who = "、".join(dict.fromkeys(names.get(r["sender_id"], "?") for r in pending))
                     note = (f"和 {who} 连续来回超过 {limit} 次，没有叫醒（你说一句话就重新计数）" if limit

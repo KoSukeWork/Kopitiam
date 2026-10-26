@@ -8,6 +8,8 @@
 - CwdChanged hook（kopitiam hook claude-cwd）：再交一次同一个 watchPaths。Claude Code 换工作目录时，
   会用 CwdChanged hook 返回的 watchPaths 替换掉 SessionStart 给的（2.1.310 实测），没有这个 hook，
   会话里 cd 一次就再也叫不醒了。
+- UserPromptSubmit hook（kopitiam hook claude-prompt，后台运行）：用户自己在这个会话里打了字，
+  它和别的 agent 之间的来回重新计数（见 detector.user_spoke）。
 
 CLAUDE_PID 是 Claude Code 给子进程设的环境变量，等于 MCP 进程认领身份时找到的 agent 进程（db.host_pid），
 所以「agent 的 pid」就能对上「哪个信号文件」（见 signals.py）。hook 进程里只用标准库 + psutil，启动要快。
@@ -97,6 +99,24 @@ def hook_wake(stdin_text: str, env=os.environ) -> tuple[int, str]:
     return 2, str(obj["text"])
 
 
+def hook_prompt(stdin_text: str, env=os.environ) -> None:
+    """UserPromptSubmit：用户自己打的字才算。
+
+    source：user = 用户在输入框里打的；system = 自动注入的（后台任务的通知、kopitiam 的唤醒等）。
+    老版本的 Claude Code 没有这个字段，就只排除 kopitiam 的唤醒提示。
+    """
+    try:
+        data = json.loads(stdin_text or "{}")
+    except ValueError:
+        return
+    from . import detector  # 要连数据库，用到时再导入，免得拖慢别的 hook
+    if data.get("source", "user") != "user" or not detector.from_user(data.get("prompt")):
+        return
+    pid = _claude_pid(env)
+    if pid is not None:
+        detector.user_spoke("claude", pid=pid)
+
+
 # ---- 安装：把两个 hook 写进 ~/.claude/settings.json ----
 
 def settings_path() -> Path:
@@ -110,6 +130,8 @@ def hook_entries(exe: str) -> dict:
         "FileChanged": {"hooks": [{"type": "command", "command": exe, "args": ["hook", "claude-wake"],
                                    "asyncRewake": True}]},
         "CwdChanged": {"hooks": [{"type": "command", "command": exe, "args": ["hook", "claude-cwd"]}]},
+        "UserPromptSubmit": {"hooks": [{"type": "command", "command": exe, "args": ["hook", "claude-prompt"],
+                                        "async": True}]},
     }
 
 

@@ -19,6 +19,7 @@ SessionStart hook（kopitiam hook codex-start）建信号文件 wake/codex-<托�
 hook 和 kopitiam 的 MCP 进程都由这个 codex 进程启动，所以进程号对得上。
 叫不醒、或者排进队列却一直没开始时，弹 Windows 通知提醒用户（remind）。为了知道对话是不是闲着，
 UserPromptSubmit hook（codex-busy，后台运行）记「开始一轮」，Stop hook 不接力时记「这一轮结束」。
+codex-busy 还顺便记下用户自己打了字（见 detector.user_spoke）。
 """
 from __future__ import annotations
 
@@ -416,12 +417,19 @@ def hook_start() -> None:
 
 
 def hook_busy(stdin_text: str) -> None:
-    """UserPromptSubmit（后台运行，不拖慢你发消息）：这个对话开始了新的一轮。"""
+    """UserPromptSubmit（后台运行，不拖慢你发消息）：这个对话开始了新的一轮。
+
+    是用户自己打的字（不是 kopitiam 排进队列的唤醒提示），它和别的 agent 之间的来回也重新计数。
+    """
     try:
         data = json.loads(stdin_text or "{}")
     except ValueError:
         return
-    _set_busy(data.get("session_id"), True)
+    session = data.get("session_id")
+    _set_busy(session, True)
+    from . import detector
+    if session and detector.from_user(data.get("prompt")):
+        detector.user_spoke("codex", thread=session)
 
 
 def _already_read(thread: str | None, upto) -> bool:

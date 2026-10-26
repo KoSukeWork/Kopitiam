@@ -237,6 +237,7 @@ kopitiam setup claude --remove # 删掉
 - 要叫醒时，感知模块往信号文件里写这次的提示。
 - `FileChanged` hook（`asyncRewake: true`）把提示输出到 stderr，并以退出码 2 结束。Claude Code 收到后，**会话空闲也会马上开始处理**；会话正忙的话，等这一轮做完再处理。
 - `CwdChanged` hook 再交一次同一个信号文件。Claude Code 换工作目录（会话里 `cd` 进子文件夹）时，会用这个 hook 返回的 `watchPaths` **替换**掉 `SessionStart` 给的；以前没装这个 hook，cd 一次就再也叫不醒了，要重开会话才恢复（2.1.310 上查到的）。
+- `UserPromptSubmit` hook（`claude-prompt`，后台运行，不拖慢你发消息）：你在这个会话里打了字，它和别的 agent 之间的来回就重新计数（见下面的规则 3）。只认你在输入框里打的（hook 收到的 `source` 是 `user`），后台任务的通知、kopitiam 的唤醒不算。
 - 在 Claude Code 2.1.303 上验证过（空闲的会话连续被叫醒两次）。`asyncRewake` 是比较新的 hook 选项，太旧的 Claude Code 可能不支持。
 - 更新 kopitiam 以后，如果 `kopitiam setup claude --print` 里有你 settings.json 里没有的 hook，就再运行一次 `kopitiam setup claude`，然后重开 Claude Code。
 
@@ -294,12 +295,12 @@ kopitiam setup codex --remove  # 删掉
 - **为什么叫不醒闲着的对话**：Codex 的 hooks 不能主动开始新回合（官方文档：后台 hook 结束「不会开始新的回合」）。对话在命令行窗口自己里面时，外面进不去；用唤醒链接的话，会让桌面版另外加载一份同一个对话，两个进程同时写记录。`codex queue` 也一样会另外加载。所以只有 kopitiam 的 MCP 进程本身挂在共享 app-server daemon 下面时，才改用 `codex queue`（这时闲着也能叫醒）。
 - **通知**：闲着叫不醒时，约 3～5 秒后弹一个 Windows 通知「codex 有新消息在等它」，正文写着会打开哪个对话（标题从 `~/.codex/session_index.jsonl` 读）。点通知直接打开那个对话（`codex://threads/<对话ID>`），随便跟它说一句，它这一轮做完就会去读。正在忙的时候不打扰（这一轮做完自己会接力）；每批只提醒一次；暂停自动唤醒时不提醒。
   - 同一个 Codex 身份只留最新一条通知；提示被拿走（读过）以后，通知也从通知中心收掉，免得过后点开旧通知去了别的对话。
-  - 「忙不忙」靠 hook 记下来：`UserPromptSubmit`（`codex-busy`，后台运行，不拖慢你发消息）记「开始一轮」，`Stop` 没有可接力的时记「这一轮结束」。还没装这个 hook 时，退回按记录文件猜：交出去 20 秒没被接走、记录文件 15 秒没动才提醒。通知的发送者名字「kopitiam」登记在 `HKCU\Software\Classes\AppUserModelId\Kopitiam`（`setup codex` 时写入，`--remove` 时删掉）。
+  - 「忙不忙」靠 hook 记下来：`UserPromptSubmit`（`codex-busy`，后台运行，不拖慢你发消息）记「开始一轮」，`Stop` 没有可接力的时记「这一轮结束」。`codex-busy` 还顺便记下你自己打了字（kopitiam 排进队列的唤醒提示不算），来回次数重新计数。还没装这个 hook 时，退回按记录文件猜：交出去 20 秒没被接走、记录文件 15 秒没动才提醒。通知的发送者名字「kopitiam」登记在 `HKCU\Software\Classes\AppUserModelId\Kopitiam`（`setup codex` 时写入，`--remove` 时删掉）。
 
 **规则**：
 1. 只有点名发给它的消息才叫醒；发给所有人的广播不叫醒。
 2. 你（网页）发的、你转发的，总是叫醒。
-3. agent 发给 agent 的：两个 agent 之间**连续来回超过 6 次**（12 条）就不再互相叫醒，消息照常送到，网页上头像角标变成琥珀色。你对其中任何一个说一句话、或者它们 30 分钟没说话，就重新计数。上限可以在网页上改，填 0 = 只有你发的消息才叫醒 agent。
+3. agent 发给 agent 的：两个 agent 之间**连续来回超过 6 次**（12 条）就不再互相叫醒，消息照常送到，网页上头像角标变成琥珀色。你对其中任何一个说一句话、或者它们 30 分钟没说话，就重新计数。「说一句话」可以是在 kopitiam 里发消息，也可以是直接在它的窗口里打字（Claude Code、Codex 靠 `UserPromptSubmit` hook 知道，所以要装新版 hook；pi、dsh 还只认 kopitiam 里的消息）。上限可以在网页上改，填 0 = 只有你发的消息才叫醒 agent。
 4. 叫醒以后，它读完那一批之前，再来新消息不会重复叫。
 5. 没开着的 agent 不管（不会自动启动它）；暂停期间、刚开始运行时已经有的旧消息不补叫。
 6. 团队里同事发来的消息本来就只到你这里，不会叫醒 agent；你转发的算你发的。
