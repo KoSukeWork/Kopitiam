@@ -428,7 +428,10 @@ def hook_busy(stdin_text: str) -> None:
     session = data.get("session_id")
     _set_busy(session, True)
     from . import detector
-    if session and detector.from_user(data.get("prompt")):
+    prompt = data.get("prompt")
+    # kopitiam 排进 Codex 队列的唤醒提示也是当成一条用户消息交给它的：按开头认出来，不算
+    if (session and isinstance(prompt, str) and prompt.strip()
+            and not prompt.lstrip().startswith(detector.WAKE_PREFIX)):
         detector.user_spoke("codex", thread=session)
 
 

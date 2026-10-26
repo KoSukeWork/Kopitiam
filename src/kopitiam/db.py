@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS wake_state(
 #   已经判断过要不要叫醒；woken_upto = 最近一次叫醒时包含的最大消息 id（agent 读到这里之前不重复叫）；
 #   woken_pid = 那次叫醒交给的 agent 进程（agent 换了进程，说明那次多半没送到，可以再叫）；
 #   note = 最近一次的结果，给网页显示；enabled = 用户在网页上关掉某个 agent 的自动唤醒时为 0；
-#   user_at = 用户最近一次直接在这个 agent 的窗口里打字的时间（agent 的 UserPromptSubmit hook 记，见 detector.user_spoke）。
+#   user_at = 用户最近一次直接在这个 agent 的窗口里发消息的时间（是不是用户发的由适配器判断，见 detector.user_spoke）。
 
 
 class _Fail(Exception):

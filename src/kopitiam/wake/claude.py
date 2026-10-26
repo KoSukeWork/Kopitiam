@@ -100,7 +100,7 @@ def hook_wake(stdin_text: str, env=os.environ) -> tuple[int, str]:
 
 
 def hook_prompt(stdin_text: str, env=os.environ) -> None:
-    """UserPromptSubmit：用户自己打的字才算。
+    """UserPromptSubmit：用户自己打的字才交给感知模块。
 
     source：user = 用户在输入框里打的；system = 自动注入的（后台任务的通知、kopitiam 的唤醒等）。
     老版本的 Claude Code 没有这个字段，就只排除 kopitiam 的唤醒提示。
@@ -110,7 +110,9 @@ def hook_prompt(stdin_text: str, env=os.environ) -> None:
     except ValueError:
         return
     from . import detector  # 要连数据库，用到时再导入，免得拖慢别的 hook
-    if data.get("source", "user") != "user" or not detector.from_user(data.get("prompt")):
+    prompt = data.get("prompt")
+    if (data.get("source", "user") != "user" or not isinstance(prompt, str) or not prompt.strip()
+            or prompt.lstrip().startswith(detector.WAKE_PREFIX)):
         return
     pid = _claude_pid(env)
     if pid is not None:

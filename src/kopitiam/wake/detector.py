@@ -71,16 +71,11 @@ def wake_text(senders: list[str], count: int) -> str:
             "按内容处理；需要回复就用 send 发给对方。")
 
 
-def from_user(prompt: object) -> bool:
-    """agent 的 UserPromptSubmit hook 收到的这一句是不是用户打的（kopitiam 交过去的唤醒提示不算）。"""
-    return isinstance(prompt, str) and bool(prompt.strip()) and not prompt.lstrip().startswith(WAKE_PREFIX)
-
-
 def user_spoke(kind: str, *, pid: int | None = None, thread: str | None = None, at: float | None = None) -> None:
-    """用户直接在 agent 自己的窗口里打了字（Claude、Codex 的 UserPromptSubmit hook，pi、dsh 的接收端记下的）。
+    """用户直接在 agent 自己的窗口里发了消息（是不是用户发的，由适配器判断）。
 
     记下时间 at（默认现在）：它和别的 agent 之间的来回从这里重新计数，和用户在 kopitiam 里对它说话一样。
-    Claude、pi 按进程号找身份，Codex、dsh 按对话 ID 找。
+    身份按对话 ID（thread）或者进程号（pid）找，用哪个由适配器给。
     """
     col, value = ("thread_id", thread) if thread else ("pid", pid)
     if not value:
