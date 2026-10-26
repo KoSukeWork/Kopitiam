@@ -12,7 +12,8 @@ from . import claude, codex, detector, dsh, pi, signals
 from .detector import WakeCall
 
 # 每个适配器：check(agent) -> 叫不醒的原因或 None；wake(call) -> 结果说明或 None（= 已叫醒），失败抛异常；
-# 可选 hint(agent) -> 能叫醒但有限制时的说明（给网页显示）；可选 remind() -> 定时调用（Codex 用来弹通知）
+# 可选 hint(agent) -> 能叫醒但有限制时的说明（给网页显示）；可选 remind() -> 定时调用（Codex 用来弹通知）；
+# 可选 typed() -> 每轮感知之前，把接收端记下的「用户在 agent 窗口里打了字」交给感知模块（pi、dsh）
 ADAPTERS = {"claude": claude, "codex": codex, "dsh": dsh, "pi": pi}
 HEARTBEAT = 10  # 每隔几秒在库里记一次「自动唤醒在运行」，网页据此提示有没有在跑
 CLEANUP = 600   # 每隔几秒清理一次关掉的 agent 留下的信号文件
@@ -28,6 +29,12 @@ def check(agent: dict) -> str | None:
 
 def run_once() -> list[tuple[WakeCall, str | None]]:
     """感知一轮并叫醒；返回 [(叫醒了谁, 失败原因或 None)]。"""
+    for mod in ADAPTERS.values():
+        if hasattr(mod, "typed"):
+            try:
+                mod.typed()
+            except Exception:  # NOTE: 记不下「用户打了字」不能挡住这一轮叫醒
+                pass
     results = []
     for call in detector.scan(check):
         note = err = None

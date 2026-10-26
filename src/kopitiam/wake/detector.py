@@ -76,18 +76,20 @@ def from_user(prompt: object) -> bool:
     return isinstance(prompt, str) and bool(prompt.strip()) and not prompt.lstrip().startswith(WAKE_PREFIX)
 
 
-def user_spoke(kind: str, *, pid: int | None = None, thread: str | None = None) -> None:
-    """用户直接在 agent 自己的窗口里打了字（agent 的 UserPromptSubmit hook 调用）。
+def user_spoke(kind: str, *, pid: int | None = None, thread: str | None = None, at: float | None = None) -> None:
+    """用户直接在 agent 自己的窗口里打了字（Claude、Codex 的 UserPromptSubmit hook，pi、dsh 的接收端记下的）。
 
-    记下时间：它和别的 agent 之间的来回从这里重新计数，和用户在 kopitiam 里对它说话一样。
-    Claude 按进程号找身份，Codex 按对话 ID 找。
+    记下时间 at（默认现在）：它和别的 agent 之间的来回从这里重新计数，和用户在 kopitiam 里对它说话一样。
+    Claude、pi 按进程号找身份，Codex、dsh 按对话 ID 找。
     """
-    col, value = ("thread_id", thread) if kind == "codex" else ("pid", pid)
+    col, value = ("thread_id", thread) if thread else ("pid", pid)
     if not value:
         return
+    now = time.time()
+    at = min(float(at), now) if isinstance(at, (int, float)) else now
     with closing(db.connect()) as c:
-        c.execute(f"UPDATE wake_state SET user_at=? WHERE agent_id IN (SELECT id FROM agents WHERE kind=? AND {col}=?)",
-                  (time.time(), kind, value))
+        c.execute("UPDATE wake_state SET user_at=MAX(COALESCE(user_at, 0), ?)"
+                  f" WHERE agent_id IN (SELECT id FROM agents WHERE kind=? AND {col}=?)", (at, kind, value))
 
 
 def _targets(to_ids: str) -> list[int]:

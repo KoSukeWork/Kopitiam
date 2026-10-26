@@ -9,6 +9,8 @@
 - 叫醒某个会话：写 wake/dsh-<dsh 进程号>.wake-<叫醒编号>.json，插件读到就发进那个会话、删掉文件。
 - 插件一加载就建 wake/dsh-<dsh 进程号>.signal（kopitiam 的 MCP 进程也是 dsh 进程启动的，进程号对得上），
   所以它在 = 装好了插件。
+- 用户自己在某个会话里发了消息，插件写 wake/dsh-<dsh 进程号>.typed-<会话>（{"session", "at"}）；
+  typed() 拿走它，这个会话和别的 agent 之间的来回重新计数（见 detector.user_spoke）。
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ import shutil
 from pathlib import Path
 
 from ..config import safe, wake_dir
-from . import signals
+from . import detector, signals
 
 PLUGIN = Path(__file__).with_name("dsh_wake.mjs")
 BEGIN = "# >>> kopitiam 自动唤醒（kopitiam setup dsh 加的；kopitiam setup dsh --remove 会删掉这一段）"
@@ -54,6 +56,12 @@ def wake(call) -> None:
     tmp.write_text(json.dumps({"id": call.wake_id, "text": call.text, "session": call.thread_id},
                               ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, target)
+
+
+def typed() -> None:
+    for _, obj in signals.take_typed("dsh-*.typed-*"):
+        if obj.get("session"):
+            detector.user_spoke("dsh", thread=str(obj["session"]), at=obj.get("at"))
 
 
 # ---- 安装：复制插件，在 cordis.patch.yml 末尾加一段 insert ----

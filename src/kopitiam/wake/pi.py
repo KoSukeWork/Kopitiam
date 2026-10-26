@@ -4,6 +4,8 @@
 - pi 启动时扩展建信号文件 wake/pi-<pi 进程号>.signal 并监视它；扩展和 kopitiam MCP 都在这个 pi 进程下面，
   所以 process.pid 就是 MCP 认领身份时找到的 agent 进程。
 - 要叫醒时 wake() 写信号文件，扩展读到后 sendUserMessage（pi 正忙就排在这一轮后面）。
+- 用户自己在 pi 里打了字，扩展写 wake/pi-<pi 进程号>.typed（{"at": 时间}）；typed() 拿走它，
+  这个 pi 和别的 agent 之间的来回重新计数（见 detector.user_spoke）。
 """
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ import os
 import shutil
 from pathlib import Path
 
-from . import signals
+from . import detector, signals
 
 EXTENSION = Path(__file__).with_name("pi_wake.ts")
 INSTALLED_NAME = "kopitiam-wake.ts"
@@ -25,6 +27,13 @@ def check(agent: dict) -> str | None:
 
 def wake(call) -> None:
     signals.write("pi", call)
+
+
+def typed() -> None:
+    for f, obj in signals.take_typed("pi-*.typed"):
+        pid = f.stem.rpartition("-")[2]
+        if pid.isdigit():
+            detector.user_spoke("pi", pid=int(pid), at=obj.get("at"))
 
 
 def extensions_dir() -> Path:

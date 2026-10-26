@@ -11,6 +11,9 @@
  *   sessionController.prompt 发进那个会话，和在网页上发消息一样：会话闲着马上开始，正在忙就排在这一轮后面；
  *   然后删掉文件。requestId 用叫醒编号，dsh 自己保证同一个只收一次。
  * - dsh-<进程号>.signal 在 = 装好了这个插件（kopitiam 那边据此判断能不能叫醒）。
+ * - 用户自己在某个会话里发了消息：写 dsh-<进程号>.typed-<会话>（{session, at}），kopitiam 据此让这个会话
+ *   和别的 agent 之间的来回重新计数。网页、命令行发的都走 sessionController.prompt，消息的 source.kind 是 user；
+ *   上面交的唤醒 requestId 以 kopitiam- 开头，不算。
  */
 import { existsSync, mkdirSync, readFileSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -54,6 +57,19 @@ export function apply(ctx) {
     return run;
   });
 
+  ctx.on("agent/pre-step", (step, next) => {
+    const id = step.agent?.session?.header?.id;
+    if (id && step.messages?.some(fromUser)) {
+      try {
+        writeFileSync(join(dir, `${prefix}.typed-${encodeURIComponent(id)}`),
+          JSON.stringify({ session: id, at: Date.now() / 1000 }));
+      } catch {
+        // 记不下也不影响这一步
+      }
+    }
+    return next();
+  });
+
   // 发给指定的会话：读到就删，同一次叫醒只发一次
   const deliver = async (file) => {
     let msg;
@@ -92,6 +108,11 @@ export function apply(ctx) {
       remove(calling);
     };
   }, "kopitiam-wake: watch the wake signal");
+}
+
+function fromUser(message) {
+  return message?.role === "user" && message.source?.kind === "user"
+    && !String(message.source.rpcId ?? "").startsWith("kopitiam-");
 }
 
 function read(path) {

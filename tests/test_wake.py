@@ -422,6 +422,57 @@ def test_pi_adapter_wakes_through_signal_file(home):
     assert body["id"] == f"{p}-{m}" and "kopitiam：你有 1 条新消息" in body["text"]
 
 
+def test_pi_and_dsh_typing_is_picked_up_each_round(home):
+    db.init_db()
+    p = db.claim("pi", cwd=str(home), name="P", pid=os.getpid())
+    d = db.claim_thread("dsh", "session-1", str(home / "Proj"), pid=os.getpid(), host="dsh")
+    _scan()
+    w = wake_dir()
+    w.mkdir(parents=True, exist_ok=True)
+    (w / f"pi-{os.getpid()}.typed").write_text(json.dumps({"at": 1000.0}), encoding="utf-8")
+    (w / f"dsh-{os.getpid()}.typed-session-1").write_text(json.dumps({"session": "session-1", "at": 2000.0}),
+                                                          encoding="utf-8")
+    (w / f"dsh-{os.getpid()}.typed-x").write_text("坏的", encoding="utf-8")
+    service.run_once()
+    assert (_user_at(p), _user_at(d)) == (1000.0, 2000.0)
+    assert [f.name for f in w.iterdir() if "typed" in f.name] == []  # 拿走就删，坏的也删
+    (w / f"pi-{os.getpid()}.typed").write_text(json.dumps({"at": 500.0}), encoding="utf-8")
+    service.run_once()
+    assert _user_at(p) == 1000.0  # 不会往回退
+
+
+PI_DRIVER = r"""
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+const { default: extension } = await import(pathToFileURL(process.argv[2]).href);
+const handlers = {};
+extension({ on: (event, fn) => { handlers[event] = fn; }, sendUserMessage: () => {} });
+const typed = join(process.env.KOPITIAM_HOME, "wake", `pi-${process.pid}.typed`);
+const seen = [];
+for (const [source, text] of [["extension", "看下聊天室"], ["interactive", "  "],
+                              ["rpc", "kopitiam：你有 1 条新消息（来自 A）"], ["interactive", "继续"], ["rpc", "好"]]) {
+  await handlers.input({ type: "input", text, source });
+  seen.push(existsSync(typed) && JSON.parse(readFileSync(typed, "utf8")).at > 0);
+  if (existsSync(typed)) unlinkSync(typed);
+}
+console.log(JSON.stringify({ seen }));
+"""
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="需要 Node.js（22.6 以上，能直接跑 .ts）")
+def test_pi_extension_records_only_what_the_user_typed(home):
+    from kopitiam.wake import pi
+
+    driver = home / "pi-driver.mjs"
+    driver.write_text(PI_DRIVER, encoding="utf-8")
+    r = subprocess.run(["node", str(driver), str(pi.EXTENSION)], capture_output=True, text=True,
+                       encoding="utf-8", timeout=60, env=os.environ | {"KOPITIAM_HOME": str(home)})
+    assert r.returncode == 0, r.stderr
+    # 扩展发的、空的、kopitiam 的唤醒提示不算；在 pi 里打的、外面界面（rpc）发的算
+    assert json.loads(r.stdout.strip().splitlines()[-1])["seen"] == [False, False, False, True, True]
+
+
 def test_pi_install_and_remove(home):
     from kopitiam.wake import pi
 
@@ -1166,7 +1217,7 @@ def test_mcp_switch_identity_swaps_conversations(home):
 
 
 NODE_DRIVER = r"""
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 const { apply, inject, name } = await import(pathToFileURL(process.argv[2]).href);
@@ -1196,6 +1247,13 @@ const call = (tool, id) => handlers["tools/execute"](
 const results = await Promise.all([call("mcp__kopitiam__read", "s-1"), call("mcp__kopitiam__send", "s-2")]);
 const other = await call("read_file", "s-3");
 const left = existsSync(calling);
+const step = (id, ...sources) => handlers["agent/pre-step"](
+  { agent: { session: { header: { id } } }, messages: sources.map((source) => ({ role: "user", content: [], source })) },
+  () => "step-" + id);
+const steps = [step("s-1", { kind: "user", rpcId: "kopitiam-5-8" }), step("s-2", { kind: "schedule" }),
+               step("s/3", { kind: "subagent-settled" }, { kind: "user", rpcId: "web-1" }), step("s-4")];
+const typed = readdirSync(dir).filter((f) => f.includes(".typed-"))
+  .map((f) => ({ file: f.slice(prefix.length), ...JSON.parse(readFileSync(join(dir, f), "utf8")) }));
 const wake = join(dir, `${prefix}.wake-5-9.json`);
 writeFileSync(wake + ".tmp", JSON.stringify({ id: "5-9", text: "kopitiam：你有 1 条新消息", session: "s-2" }));
 renameSync(wake + ".tmp", wake);
@@ -1204,7 +1262,7 @@ const consumed = !existsSync(wake);
 writeFileSync(join(dir, "dsh-1.wake-7-1.json"), JSON.stringify({ id: "7-1", text: "别的 dsh 的", session: "x" }));
 await sleep(300);
 disposers.forEach((d) => d());
-console.log(JSON.stringify({ name, inject, ready, results, other, seen, left, consumed, prompts, warns,
+console.log(JSON.stringify({ name, inject, ready, results, other, seen, left, consumed, prompts, warns, steps, typed,
   removed: !existsSync(join(dir, `${prefix}.signal`)) }));
 """
 
@@ -1231,6 +1289,10 @@ def test_dsh_plugin_tells_kopitiam_the_session_and_wakes_it(home):
         {"requestId": "kopitiam-5-9", "sessionId": "s-2", "mode": "queue",
          "content": [{"type": "text", "text": "kopitiam：你有 1 条新消息"}]}]  # 别的 dsh 进程的不管
     assert out["warns"] == [] and out["removed"] is True
+    # 用户自己发的消息才记（kopitiam 交的唤醒、定时任务、子 agent 的结果不算），不挡这一步
+    assert out["steps"] == ["step-s-1", "step-s-2", "step-s/3", "step-s-4"]
+    assert [(t["file"], t["session"]) for t in out["typed"]] == [(".typed-s%2F3", "s/3")]
+    assert abs(out["typed"][0]["at"] - time.time()) < 60
 
 
 # ---- 叫醒了但没送到：agent 重开过 / 太久没读，就再交一次 ----

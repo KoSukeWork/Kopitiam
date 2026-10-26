@@ -248,7 +248,7 @@ kopitiam setup pi           # 把扩展复制到 ~/.pi/agent/extensions/kopitiam
 kopitiam setup pi --remove  # 删掉
 ```
 
-装好后**重开 pi** 才生效。原理和 Claude 一样：扩展在 pi 启动时建 `~/.kopitiam/wake/pi-<进程号>.signal` 并监视它，读到新提示就用 `pi.sendUserMessage` 交给 pi（空闲时马上开始，正在忙就排在这一轮后面）。在 pi 1.3.0 上验证过：空闲的 pi 被叫醒后自己 `read`、再用 `send` 回复。
+装好后**重开 pi** 才生效。原理和 Claude 一样：扩展在 pi 启动时建 `~/.kopitiam/wake/pi-<进程号>.signal` 并监视它，读到新提示就用 `pi.sendUserMessage` 交给 pi（空闲时马上开始，正在忙就排在这一轮后面）。在 pi 1.3.0 上验证过：空闲的 pi 被叫醒后自己 `read`、再用 `send` 回复。你在 pi 里打了字（`input` 事件的 `source` 不是 `extension`），扩展就写 `pi-<进程号>.typed`，自动唤醒据此让它和别的 agent 之间的来回重新计数。
 
 **dsh 安装**（只做一次）：
 
@@ -259,6 +259,8 @@ kopitiam setup dsh --remove        # 删掉
 ```
 
 它把插件复制到 `~/.dsh/profiles/<profile>/kopitiam-wake-<哈希>.mjs`（文件名带内容的哈希：dsh 用 `import()` 加载插件，同一个路径会一直用缓存里的旧版本，换了文件名才不会用到旧的），并在那个 profile 的 `cordis.patch.yml` 末尾加一段 `- insert:`（前后有 `# >>> kopitiam 自动唤醒` / `# <<< kopitiam 自动唤醒` 标记行，`--remove` 整段删掉，别的内容不动）。web profile 默认 `patchReload: live`，改完自动重新加载；别的 profile 要重开 dsh。然后每个会话先用一次 kopitiam（比如让它调用 `whoami`），就有了自己的身份。
+
+你在某个会话里发了消息（网页、命令行都算；kopitiam 叫醒时发进去的不算），插件就写 `dsh-<进程号>.typed-<会话>`，自动唤醒据此让这个会话和别的 agent 之间的来回重新计数。
 
 > 以前装过插件的，更新 kopitiam 以后要再运行一次 `kopitiam setup dsh`，然后**重开 dsh**（见「更新」）：插件是复制过去的，不会自己更新；而且实测（dsh 0.2）热加载能换掉 MCP 的配置，换不掉已经加载的插件。
 
@@ -300,7 +302,7 @@ kopitiam setup codex --remove  # 删掉
 **规则**：
 1. 只有点名发给它的消息才叫醒；发给所有人的广播不叫醒。
 2. 你（网页）发的、你转发的，总是叫醒。
-3. agent 发给 agent 的：两个 agent 之间**连续来回超过 6 次**（12 条）就不再互相叫醒，消息照常送到，网页上头像角标变成琥珀色。你对其中任何一个说一句话、或者它们 30 分钟没说话，就重新计数。「说一句话」可以是在 kopitiam 里发消息，也可以是直接在它的窗口里打字（Claude Code、Codex 靠 `UserPromptSubmit` hook 知道，所以要装新版 hook；pi、dsh 还只认 kopitiam 里的消息）。上限可以在网页上改，填 0 = 只有你发的消息才叫醒 agent。
+3. agent 发给 agent 的：两个 agent 之间**连续来回超过 6 次**（12 条）就不再互相叫醒，消息照常送到，网页上头像角标变成琥珀色。你对其中任何一个说一句话、或者它们 30 分钟没说话，就重新计数。「说一句话」可以是在 kopitiam 里发消息，也可以是直接在它的窗口里打字（Claude Code、Codex 靠 `UserPromptSubmit` hook 知道，pi 靠扩展、dsh 靠插件知道，所以都要装新版：`kopitiam setup claude` / `pi` / `dsh`，然后重开它们）。上限可以在网页上改，填 0 = 只有你发的消息才叫醒 agent。
 4. 叫醒以后，它读完那一批之前，再来新消息不会重复叫。
 5. 没开着的 agent 不管（不会自动启动它）；暂停期间、刚开始运行时已经有的旧消息不补叫。
 6. 团队里同事发来的消息本来就只到你这里，不会叫醒 agent；你转发的算你发的。

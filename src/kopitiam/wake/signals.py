@@ -65,6 +65,28 @@ def taken(wake_id: str) -> bool:
     return (wake_dir() / "taken" / safe(str(wake_id))).exists()
 
 
+def take_typed(pattern: str) -> list[tuple[Path, dict]]:
+    """接收端记下的「用户在 agent 自己的窗口里打了字」（pi 的扩展、dsh 的插件写的 JSON 文件）：拿走，读完就删。
+
+    先改名再读：接收端这时候再记一次，会写出一个新文件，不会丢。正被写着改不了名的，下一轮再拿。
+    """
+    out = []
+    for f in wake_dir().glob(pattern):
+        tmp = f.with_name(f".{f.name}.taking")
+        try:
+            os.replace(f, tmp)
+        except OSError:
+            continue
+        try:
+            obj = json.loads(tmp.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            obj = None
+        tmp.unlink(missing_ok=True)
+        if isinstance(obj, dict):
+            out.append((f, obj))
+    return out
+
+
 def cleanup() -> None:
     """删掉已经关掉的 agent 留下的信号文件、一天以前的去重标记。尽力而为。"""
     try:
