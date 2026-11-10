@@ -611,7 +611,7 @@ aside { width:280px; flex-shrink:0; display:flex; flex-direction:column; backgro
 .brand { display:flex; align-items:center; gap:12px; padding:18px 20px 12px; }
 .brand .logo { font-size:16px; font-weight:700; letter-spacing:.3px; }
 .brand .sub { font-size:12px; color:var(--muted); }
-#agents { flex:1; overflow-y:auto; padding:2px 10px 16px; }
+#sideScroll { flex:1; min-height:0; overflow-y:auto; padding:2px 10px 16px; }
 .section { display:flex; align-items:center; gap:6px; padding:14px 10px 6px; font-size:12px; font-weight:600; color:var(--muted); letter-spacing:.3px; }
 details.offline > summary { list-style:none; cursor:pointer; user-select:none; }
 details.offline > summary::-webkit-details-marker { display:none; }
@@ -822,7 +822,7 @@ main.page > #convbar, main.page > #conn, main.page > #stream, main.page > #compo
 .pick-row .name { flex:1; font-weight:500; }
 .bigbtn { width:100%; margin-top:12px; padding:9px; border:0; border-radius:10px; background:var(--accent); color:var(--accent-ink); font-weight:600; cursor:pointer; }
 .bigbtn:disabled { opacity:.35; cursor:default; }
-#list { max-width:860px; margin:0 auto; }
+#list, #groupList { max-width:860px; margin:0 auto; }
 .enter { animation:rise .3s cubic-bezier(.2, .7, .3, 1) both; }
 #empty { display:flex; flex-direction:column; align-items:center; gap:14px; margin-top:16vh; text-align:center; }
 #empty .mark { width:64px; height:64px; }
@@ -920,12 +920,72 @@ main.page > #convbar, main.page > #conn, main.page > #stream, main.page > #compo
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation:none !important; transition:none !important; }
 }
+/* ---- 群聊：沿用主题、机器人与唤醒状态 ---- */
+.groups-head { justify-content:space-between; padding-bottom:10px; }
+.new-group { display:flex; align-items:center; gap:3px; border:0; background:none; padding:3px; color:var(--ink-2); font-size:12px; cursor:pointer; }
+.new-group:hover { color:var(--accent); }
+.group-row { display:block; width:100%; text-align:left; border:1px solid transparent; background:none; border-radius:13px; padding:11px 10px; margin:3px 0; cursor:pointer; transition:background .15s, border-color .15s; }
+.group-row:hover { background:var(--hover); }
+.group-row.active { background:var(--accent-soft); border-color:var(--line); }
+.group-line { display:flex; align-items:center; gap:7px; min-width:0; }
+.group-name { flex:1; min-width:0; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.group-time { color:var(--muted); font-size:11px; flex-shrink:0; }
+.group-dot { width:6px; height:6px; border:1px solid var(--muted); border-radius:50%; flex-shrink:0; }
+.group-dot.online { background:var(--ok); border-color:var(--ok); box-shadow:0 0 6px color-mix(in srgb, var(--ok), transparent 60%); }
+.group-preview { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font-size:12px; }
+.group-row .group-line + .group-line { margin-top:9px; }
+.group-count { flex-shrink:0; min-width:19px; height:19px; padding:0 5px; display:grid; place-items:center; border-radius:7px; color:var(--accent-ink); background:var(--accent); font-size:10px; font-weight:700; }
+.group-stack { display:flex; align-items:center; padding-left:4px; flex-shrink:0; }
+.group-stack .avatar { width:22px; height:22px; margin-left:-4px; border-radius:50%; background:var(--panel); }
+.group-stack .more { padding-left:2px; font-size:10px; color:var(--muted); }
+.group-empty { padding:6px 10px 12px; color:var(--muted); font-size:12px; }
+#groupHeader { flex-shrink:0; padding:0 24px 14px; background:var(--panel); border-bottom:1px solid var(--line); }
+#groupAbout { font-size:12px; color:var(--ink-2); margin:8px 0 12px; }
+#groupAbout summary { cursor:pointer; color:var(--muted); }
+#groupAbout p { margin:8px 0; white-space:pre-wrap; overflow-wrap:anywhere; max-height:150px; overflow-y:auto; }
+#groupMembers { display:flex; align-items:center; flex-wrap:wrap; gap:7px; }
+.member-chip { display:flex; align-items:center; gap:6px; padding:5px 10px 5px 6px; border:1px solid var(--line); border-radius:10px; background:var(--bg); font-size:12px; cursor:pointer; max-width:100%; }
+.member-chip:hover { background:var(--hover); border-color:var(--muted); }
+.member-chip .avatar { width:25px; height:25px; }
+.member-chip .member-name { overflow:hidden; text-overflow:ellipsis; }
+.member-chip .wake-dot { position:static; }
+.group-label { border:1px solid var(--line); border-radius:5px; padding:1px 5px; font-size:10px; color:var(--ink-2); background:var(--hover); cursor:pointer; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+body.in-group .group-label { display:none; }
+body.in-group #convbar { border-bottom:0; }
+main.page > #groupHeader { display:none; }
+.group-form label.field { display:flex; flex-direction:column; gap:6px; margin-bottom:14px; font-size:12px; color:var(--ink-2); }
+.group-form .tin { width:100%; font-size:14px; }
+.group-form textarea { resize:vertical; min-height:80px; max-height:200px; }
+.group-form .pick-row .info { flex:1; min-width:0; }
+.group-form .pick-row .name { display:block; overflow:hidden; text-overflow:ellipsis; }
+.group-form .pick-row .tsub { margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.group-actions { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:16px; }
+.group-actions .bigbtn { width:auto; margin:0; padding:9px 24px; }
+.group-event { margin:4px 0 22px; text-align:center; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+.group-event time { margin-left:7px; opacity:.75; }
+.box { position:relative; }
+#mentions { position:absolute; bottom:calc(100% + 9px); left:0; right:0; max-height:260px; overflow-y:auto; padding:6px; border:1px solid var(--line); border-radius:14px; background:var(--panel); box-shadow:0 12px 40px rgba(0,0,0,.2); z-index:5; }
+.mention-option { display:flex; align-items:center; gap:9px; width:100%; padding:8px 10px; border:0; border-radius:9px; background:none; text-align:left; cursor:pointer; }
+.mention-option.active { background:var(--accent-soft); }
+.mention-option .avatar { width:28px; height:28px; }
+.mention-option .info { flex:1; min-width:0; }
+.mention-option .name { font-size:13px; }
+.mention-option .tsub { margin:0; font-size:11px; }
+.mention-option .invite { color:var(--muted); font-size:11px; }
+#groupOptions { font-size:22px; line-height:1; letter-spacing:1px; }
+@media (max-width:700px) {
+  #groupHeader { padding:0 12px 12px; }
+  #groupMembers { flex-wrap:nowrap; overflow-x:auto; padding:2px 0 5px; }
+  .member-chip { flex-shrink:0; max-width:210px; }
+  body.in-group #showAll { font-size:11px; padding:5px 7px; }
+  #groupAbout p { max-height:100px; }
+}
 </style>
 </head>
 <body>
 <aside id="side">
   <div class="brand"><span class="mark" data-logo></span><div><div class="logo">kopitiam</div><div class="sub" id="brandsub">本地聊天室</div></div></div>
-  <div id="agents"></div>
+  <div id="sideScroll"><div id="groups"></div><div id="agents"></div></div>
   <div id="themes">
     <button id="wakeBtn" class="sidebtn"><span data-icon="bolt"></span>自动唤醒<span class="cur" id="wakeCur"></span></button>
     <button id="themeBtn" class="sidebtn" aria-haspopup="true"><span data-icon="palette"></span>主题<span class="cur" id="themeCur"></span></button>
@@ -945,16 +1005,23 @@ main.page > #convbar, main.page > #conn, main.page > #stream, main.page > #compo
     <span id="convAvatar" hidden></span>
     <div class="titles"><div id="convtitle">全部消息</div><div id="convsub">所有人之间的消息都在这里</div></div>
     <button id="showAll" class="btn" hidden>显示全部</button>
+    <button id="groupOptions" class="iconbtn" aria-label="群聊设置" title="群聊设置" hidden>⋯</button>
+  </div>
+  <div id="groupHeader" hidden>
+    <details id="groupAbout"><summary>群聊说明</summary><p></p></details>
+    <div id="groupMembers"></div>
   </div>
   <div id="conn" role="status" hidden></div>
   <div id="stream">
     <div id="list"></div>
+    <div id="groupList" hidden></div>
     <div id="empty"><span id="emptyArt"><span class="mark" data-logo data-size="34"></span></span><div id="emptyTitle">kopitiam</div><div id="emptySub">还没有消息</div></div>
   </div>
   <div id="composer">
     <div class="box">
+      <div id="mentions" role="listbox" aria-label="点名成员" hidden></div>
       <div class="torow"><span class="lbl">发给</span><input id="to" placeholder="所有人（多个名字用逗号分隔）"></div>
-      <textarea id="text" placeholder="写点什么…"></textarea>
+      <textarea id="text" aria-label="消息" placeholder="写点什么…" aria-controls="mentions" aria-expanded="false"></textarea>
       <div class="tools">
         <input id="file" type="file" multiple hidden>
         <button id="pick" class="iconbtn" title="添加附件" aria-label="添加附件"><span data-icon="clip"></span></button>
@@ -978,6 +1045,9 @@ const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const $ = (id) => document.getElementById(id);
 let lastId = 0, pendingFiles = [], agentJson = "", offlineOpen = false, booted = false;
 let selected = null;  // 当前对话的 agent 名字；null = 显示全部消息
+let selectedGroup = null, groupsById = {}, groupJson = "", groupHeadJson = "", groupHistoryKey = "", groupHistorySeq = 0;
+let archivedGroupsOpen = false;
+const seenGroups = {}, loadedGroups = {};
 let agentsByName = {};
 const known = new Set();
 
@@ -1136,6 +1206,234 @@ function trow(...kids) { const r = el("div", "trow"); r.append(...kids); return 
 function flash(where, out, okText) {
   where.querySelector(".mok, .merr")?.remove();
   where.append(el("div", out.ok ? "mok" : "merr", out.message || (out.ok ? okText || "好了" : "失败")));
+}
+
+// ---- 群聊 ----
+function groupStack(g) {
+  const stack = el("span", "group-stack"), members = g.members.filter(n => n !== "user");
+  for (const name of members.slice(0, 3)) stack.append(avatar(name, !!agentsByName[name]?.online));
+  if (!members.length) stack.append(avatar("user", true));
+  if (members.length > 3) stack.append(el("span", "more", "+" + (members.length - 3)));
+  return stack;
+}
+
+function groupRow(g) {
+  const row = el("button", "group-row" + (selectedGroup === g.id ? " active" : ""));
+  row.setAttribute("aria-label", "打开群聊 " + g.title);
+  const line = el("div", "group-line");
+  const online = g.members.some(n => n !== "user" && agentsByName[n]?.online);
+  const dot = el("span", "group-dot" + (online ? " online" : ""));
+  dot.title = online ? "有成员在线" : "成员离线";
+  line.append(dot, el("span", "group-name", g.title), el("span", "group-time", fmtTime(g.last?.time || g.created_at)));
+  const sub = el("div", "group-line");
+  sub.append(groupStack(g), el("span", "group-preview", g.last ? shown(g.last.sender) + "：" + (g.last.preview || "附件") : "还没有消息"));
+  if (g.unread) sub.append(el("span", "group-count", g.unread > 99 ? "99+" : String(g.unread)));
+  row.append(line, sub);
+  row.onclick = () => selectGroup(g.id);
+  return row;
+}
+
+function renderGroups() {
+  const groups = Object.values(groupsById).sort((a, b) => (b.last?.time || b.created_at).localeCompare(a.last?.time || a.created_at)
+    || (b.last?.id || 0) - (a.last?.id || 0) || b.id - a.id);
+  const key = JSON.stringify(groups) + selectedGroup + JSON.stringify(Object.values(agentsByName).map(a => [a.name, a.online]));
+  if (key === groupJson) return;
+  groupJson = key;
+  const box = $("groups"), head = el("div", "section groups-head"), create = el("button", "new-group", "新群聊");
+  create.prepend(icon("plus", 13)); create.onclick = () => openGroupEditor();
+  head.append(el("span", "", "群聊"), create);
+  box.replaceChildren(head);
+  const active = groups.filter(g => !g.archived_at), archived = groups.filter(g => g.archived_at);
+  for (const g of active) box.append(groupRow(g));
+  if (!active.length) box.append(el("div", "group-empty", "把一起做事的 agent 放进一个群"));
+  if (archived.length) {
+    const det = el("details", "offline"); det.open = archivedGroupsOpen;
+    det.ontoggle = () => { archivedGroupsOpen = det.open; };
+    const sum = el("summary", "section"); sum.append(icon("chev", 12), document.createTextNode("已归档 · " + archived.length));
+    det.append(sum, ...archived.map(groupRow)); box.append(det);
+  }
+  // 群改名以后，已经在「全部消息」里的标签也跟着更新。
+  for (const label of document.querySelectorAll(".group-label")) {
+    label.textContent = "群聊·" + (groupsById[label.dataset.group]?.title || label.dataset.group);
+  }
+}
+
+function renderGroupHeader() {
+  const g = groupsById[selectedGroup];
+  if (!g) return;
+  const key = JSON.stringify(g) + JSON.stringify(wakeInfo) + JSON.stringify(g.members.map(n => agentsByName[n]));
+  if (key === groupHeadJson) return;
+  groupHeadJson = key;
+  $("convtitle").textContent = g.title;
+  $("convsub").textContent = "群聊 " + g.id + " · " + g.members.length + " 位成员" + (g.archived_at ? " · 已归档" : "");
+  $("convAvatar").hidden = true;
+  $("showAll").hidden = false;
+  $("groupOptions").hidden = false;
+  $("groupHeader").hidden = false;
+  $("groupAbout").querySelector("summary").textContent = g.about ? "说明 · " + g.about.split("\\n")[0].slice(0, 48) : "添加群聊说明";
+  $("groupAbout").querySelector("p").textContent = g.about || "在群聊设置里写下目标，让新加入的成员快速了解这件事。";
+  const members = $("groupMembers"); members.replaceChildren();
+  for (const name of g.members) {
+    const chip = el("button", "member-chip"), a = agentsByName[name];
+    chip.title = name + (a?.title ? " · " + a.title : "") + (name === "user" ? " · 用户" : a?.online ? " · 在线" : " · 离线");
+    const av = avatar(name, name === "user" || !!a?.online);
+    const bolt = wakeBadge(name);
+    chip.append(av, el("span", "member-name", shown(name)));
+    if (bolt) chip.append(bolt);
+    chip.onclick = () => select(name);
+    members.append(chip);
+  }
+  const add = el("button", "member-chip"); add.append(icon("plus", 15));
+  add.title = "添加成员"; add.setAttribute("aria-label", "添加成员"); add.onclick = () => openGroupEditor(g, true);
+  members.append(add);
+  $("text").disabled = !!g.archived_at;
+  $("pick").disabled = !!g.archived_at;
+  $("text").placeholder = g.archived_at ? "这个群已归档，在群聊设置里恢复后继续" : "@ 点名，不 @ 就是发给全体成员";
+  updateSend();
+}
+
+function groupCandidates(g) {
+  return Object.values(agentsByName).filter(a => a.kind !== "remote" && a.name !== "user"
+    && (g?.members.includes(a.name) || (!a.archived && !a.trashed)))
+    .sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
+}
+
+function openGroupEditor(g = null, addOnly = false) {
+  closeSide();
+  const body = el("div", "team group-form");
+  const title = el("input", "tin"), about = el("textarea", "tin");
+  title.value = g?.title || ""; title.maxLength = 40; title.placeholder = "给这件事起个名字";
+  about.value = g?.about || ""; about.maxLength = 2000; about.placeholder = "希望一起完成什么？（可选）";
+  if (!addOnly) {
+    for (const [label, input] of [["群聊名称", title], ["说明 / 目标", about]]) {
+      const field = el("label", "field", label); field.append(input); body.append(field);
+    }
+  }
+  body.append(el("div", "mlabel", addOnly ? "选择要拉进群的 agent" : "成员 · user 始终在群里"));
+  const picker = el("div", "pick"), checks = [];
+  for (const a of groupCandidates(g).filter(a => !addOnly || !g.members.includes(a.name))) {
+    const row = el("label", "pick-row"), check = el("input"); check.type = "checkbox";
+    check.checked = !addOnly && !!g?.members.includes(a.name);
+    const info = el("div", "info");
+    info.append(el("span", "name", a.name), el("div", "tsub", (a.online ? "在线" : "离线") + " · " + (a.title || a.kind)));
+    row.append(check, avatar(a.name, a.online), info); picker.append(row); checks.push([a.name, check]);
+  }
+  if (!checks.length) picker.append(el("div", "mnote", "暂时没有可添加的 agent；可以先建群，之后再拉人。"));
+  body.append(picker);
+  const error = el("div", "merr"); error.setAttribute("role", "alert"); body.append(error);
+  const actions = el("div", "group-actions"), save = el("button", "bigbtn", addOnly ? "添加成员" : g ? "保存更改" : "创建群聊");
+  if (g && !addOnly) {
+    const archive = opBtn(g.archived_at ? "restore" : "archive", g.archived_at ? "恢复群聊" : "归档群聊", "", async () => {
+      try {
+        const out = await post("/api/group", {id:g.id, archived:!g.archived_at});
+        if (!out.ok) { error.textContent = out.message || "操作失败"; return; }
+        closeModal(); await poll();
+      } catch (e) { error.textContent = "连不上 kopitiam web，请重试"; }
+    });
+    actions.append(archive);
+  } else actions.append(el("span"));
+  actions.append(save); body.append(actions);
+  save.onclick = async () => {
+    const chosen = checks.filter(([, c]) => c.checked).map(([n]) => n);
+    const data = g ? {id:g.id, add:chosen.filter(n => !g.members.includes(n))} : {title:title.value, about:about.value, members:chosen};
+    if (g && !addOnly) Object.assign(data, {title:title.value, about:about.value, remove:g.members.filter(n => n !== "user" && !chosen.includes(n))});
+    save.disabled = true;
+    try {
+      const out = await post(g ? "/api/group" : "/api/groups", data);
+      if (!out.ok) { error.textContent = out.message || "保存失败"; return; }
+      closeModal(); await poll(); selectGroup(out.group.id);
+    } catch (e) { error.textContent = "连不上 kopitiam web，请重试"; }
+    finally { save.disabled = false; }
+  };
+  openModal(addOnly ? "添加成员" : g ? "群聊设置" : "新群聊", body);
+  if (!addOnly) title.focus();
+}
+
+function selectGroup(id) {
+  if (!groupsById[id]) return;
+  closeHidden(); closeSide(); hideMentions();
+  selected = null; selectedGroup = id; groupHeadJson = ""; groupHistoryKey = "";
+  document.body.classList.add("in-group");
+  $("list").hidden = true; $("groupList").hidden = false; $("groupList").replaceChildren();
+  $("to").closest(".torow").hidden = true;
+  $("to").value = "";
+  agentJson = ""; renderAgents(Object.values(agentsByName)); renderGroups(); renderGroupHeader();
+  updateEmpty(); loadGroupHistory(id, true);
+  if (!groupsById[id].archived_at) $("text").focus();
+}
+
+function groupEvent(e) {
+  const actor = e.actor ? shown(e.actor) : "已删除的成员", agent = e.agent || "已删除的成员";
+  const text = {created:actor + " 创建了群聊", added:actor + " 把 " + agent + " 拉进了群聊",
+    removed:actor + " 将 " + agent + " 移出了群聊", renamed:actor + " 将群聊改名为「" + e.detail + "」",
+    updated:actor + " 更新了群聊说明", archived:actor + " 归档了群聊", restored:actor + " 恢复了群聊"}[e.kind] || "群聊已更新";
+  const node = el("div", "group-event", text);
+  node.append(el("time", "", fmtTime(e.time))); return node;
+}
+
+async function loadGroupHistory(id, force = false) {
+  const g = groupsById[id]; if (!g || selectedGroup !== id) return;
+  const key = id + "|" + g.last?.id + "|" + g.count + "|" + g.event_id;
+  if (!force && key === groupHistoryKey) { markGroupSeen(id, loadedGroups[id] || 0); return; }
+  groupHistoryKey = key;
+  const seq = ++groupHistorySeq;
+  try {
+    const out = await api("/api/messages?group=" + id);
+    if (selectedGroup !== id || seq !== groupHistorySeq) return;
+    if (!out.messages) { groupHistoryKey = ""; return; }
+    const stream = $("stream"), bottom = force || stream.scrollTop + stream.clientHeight >= stream.scrollHeight - 40;
+    const items = [...out.messages.map(m => ({time:m.time, id:m.id, node:messageNode(m), event:false})),
+      ...(out.events || []).map(e => ({time:e.time, id:e.id, node:groupEvent(e), event:true}))];
+    // NOTE: 数据库时间精确到秒；同一秒内的事件排在消息前，保证排序稳定。
+    items.sort((a, b) => a.time.localeCompare(b.time) || Number(b.event) - Number(a.event) || a.id - b.id);
+    $("groupList").replaceChildren(...items.map(x => x.node));
+    updateEmpty(); if (bottom) stream.scrollTop = stream.scrollHeight;
+    loadedGroups[id] = out.messages.at(-1)?.id || 0;
+    markGroupSeen(id, loadedGroups[id]);
+  } catch (e) { if (seq === groupHistorySeq) groupHistoryKey = ""; }
+}
+
+async function markGroupSeen(id, upto) {
+  if (selectedGroup !== id || document.hidden || (seenGroups[id] || 0) >= upto) return;
+  const previous = seenGroups[id] || 0; seenGroups[id] = upto;
+  try {
+    const out = await post("/api/seen", {group:id, upto});
+    if (!out.ok) { seenGroups[id] = previous; return; }
+    if (groupsById[id] && (groupsById[id].last?.id || 0) <= upto) { groupsById[id].unread = 0; renderGroups(); }
+  } catch (e) { seenGroups[id] = previous; }
+}
+
+let mentionChoices = [], mentionIndex = 0, mentionStart = 0, mentionEnd = 0;
+function hideMentions() { $("mentions").hidden = true; $("text").setAttribute("aria-expanded", "false"); $("text").removeAttribute("aria-activedescendant"); }
+function updateMentions() {
+  if (!selectedGroup || $("text").disabled) { hideMentions(); return; }
+  const input = $("text"), before = input.value.slice(0, input.selectionStart);
+  const match = before.match(/(?:^|[^\\p{L}\\p{N}_.@-])@([^\\s]*)$/u);
+  if (!match) { hideMentions(); return; }
+  mentionStart = before.length - match[1].length - 1; mentionEnd = input.selectionStart;
+  const g = groupsById[selectedGroup], query = match[1].toLowerCase();
+  mentionChoices = [...groupCandidates(g), {name:"user", kind:"human", online:true}]
+    .filter(a => a.name.toLowerCase().startsWith(query));
+  if (!mentionChoices.length) { hideMentions(); return; }
+  mentionIndex = 0; renderMentions();
+}
+function renderMentions() {
+  const list = $("mentions"); list.replaceChildren(); list.hidden = false;
+  $("text").setAttribute("aria-expanded", "true");
+  mentionChoices.forEach((a, i) => {
+    const row = el("button", "mention-option" + (i === mentionIndex ? " active" : ""));
+    row.id = "mention-" + i; row.setAttribute("role", "option"); row.setAttribute("aria-selected", String(i === mentionIndex));
+    const info = el("div", "info"); info.append(el("div", "name", a.name), el("div", "tsub", a.title || (a.name === "user" ? "用户" : a.kind)));
+    row.append(avatar(a.name, a.online), info);
+    if (!groupsById[selectedGroup].members.includes(a.name)) row.append(el("span", "invite", "发送时拉进群"));
+    row.onmousedown = e => e.preventDefault(); row.onclick = () => insertMention(a.name); list.append(row);
+  });
+  $("text").setAttribute("aria-activedescendant", "mention-" + mentionIndex);
+  $("mention-" + mentionIndex)?.scrollIntoView({block:"nearest"});
+}
+function insertMention(name) {
+  const t = $("text"); t.setRangeText("@" + name + " ", mentionStart, mentionEnd, "end");
+  hideMentions(); t.focus(); updateSend(); autosize();
 }
 
 // ---- 团队：配对同事、开关团队连接、我的名字 ----
@@ -1516,6 +1814,7 @@ async function reloadStream() {
   booted = false;  // 重新加载的不播入场动画
   await poll();
   if (selected) await loadHistory(selected);
+  if (selectedGroup) await loadGroupHistory(selectedGroup, true);
 }
 
 function opBtn(iconName, label, cls, onclick, title) {
@@ -1601,6 +1900,13 @@ function agentRow(a) {
     add.title = "加到「发给」（可以同时发给多个）";
     add.onclick = (e) => {
       e.stopPropagation();  // 只加收件人，不切换对话
+      if (selectedGroup) {
+        if (a.kind === "remote") { select(a.name); return; }
+        const input = $("text");
+        if (input.disabled) return;
+        input.setRangeText("@" + a.name + " ", input.selectionStart, input.selectionEnd, "end");
+        input.focus(); updateSend(); autosize(); return;
+      }
       const cur = $("to").value.split(",").map(s => s.trim()).filter(Boolean);
       if (!cur.includes(a.name)) cur.push(a.name);
       $("to").value = cur.join(", ");
@@ -1628,10 +1934,10 @@ function involves(m, name) {
 
 let emptyKey = "logo";
 function updateEmpty() {
-  const any = [...$("list").children].some(e => !e.hidden);
+  const any = [...$(selectedGroup ? "groupList" : "list").children].some(e => !e.hidden);
   $("empty").hidden = any;
-  $("emptyTitle").textContent = selected === "user" ? "我的消息" : selected || "kopitiam";
-  $("emptySub").textContent = selected === "user" ? "在这里发送 = 发给自己，当备忘用"
+  $("emptyTitle").textContent = selectedGroup ? groupsById[selectedGroup]?.title || "群聊" : selected === "user" ? "我的消息" : selected || "kopitiam";
+  $("emptySub").textContent = selectedGroup ? "发第一条消息，或用 @名字 把伙伴拉进来" : selected === "user" ? "在这里发送 = 发给自己，当备忘用"
     : selected ? "和 " + selected + " 还没有消息" : "还没有消息，在下面写第一句吧";
   // 选中某个 agent 时换成它的大号头像；只在变化时重建，否则每次轮询都会把动画打断
   const a = selected && selected !== "user" ? agentsByName[selected] : null;
@@ -1648,6 +1954,7 @@ function applyFilter() {
 }
 
 function updateConvbar() {
+  if (selectedGroup) { renderGroupHeader(); return; }
   const a = selected && agentsByName[selected];
   $("convtitle").textContent = selected === "user" ? "我的消息" : selected ? "与 " + selected + " 的对话" : "全部消息";
   $("convsub").textContent = selected === "user" ? "发给你的、你发的都在这里；在这里发送 = 发给自己（备忘）"
@@ -1663,7 +1970,14 @@ function closeSide() { $("side").classList.remove("open"); $("backdrop").classLi
 
 function select(name) {
   closeHidden();
+  hideMentions(); selectedGroup = null; groupHistorySeq++; groupHistoryKey = "";
+  document.body.classList.remove("in-group");
+  $("groupHeader").hidden = true; $("groupOptions").hidden = true;
+  $("list").hidden = false; $("groupList").hidden = true;
+  $("to").closest(".torow").hidden = false;
+  $("text").disabled = false; $("pick").disabled = false; $("text").placeholder = "写点什么…";
   selected = name;
+  updateSend(); renderGroups();
   updateConvbar();
   $("to").value = name || "";
   agentJson = "";  // 强制重绘左栏，更新高亮
@@ -1684,11 +1998,7 @@ async function loadHistory(name) {
   const s = $("stream"); s.scrollTop = s.scrollHeight;
 }
 
-function addMessage(m, backfill) {
-  if (known.has(m.id)) return;
-  known.add(m.id);
-  // 补全的历史不推进 lastId：否则 lastId 跳过去，中间别人的消息就再也拉不到了
-  if (!backfill && m.id > lastId) lastId = m.id;  // 下次轮询只要更新的消息
+function messageNode(m) {
   const mine = m.sender === "user";
   let div;
   if (/^（.+ 改名为 .+）$/.test(m.text) && !m.files.length) {
@@ -1713,8 +2023,13 @@ function addMessage(m, backfill) {
     fwd.append(icon("fwd", 14));
     fwd.title = "转发给 agent 或同事";
     fwd.onclick = () => openForward(m);
-    meta.append(who, el("span", "", "→ " + (m.to.length ? m.to.map(shown).join("、") : "所有人")),
+    const recipients = m.group ? (m.to_all ? "全体" : m.to.map(n => "@" + n).join("、")) : (m.to.length ? m.to.map(shown).join("、") : "所有人");
+    meta.append(who, el("span", "", "→ " + recipients),
                 el("span", "", fmtTime(m.time)), el("span", "id", "#" + m.id), fwd);
+    if (m.group) {
+      const label = el("button", "group-label", "群聊·" + (groupsById[m.group]?.title || m.group));
+      label.dataset.group = m.group; label.onclick = () => selectGroup(m.group); meta.append(label);
+    }
     body.append(meta);
     if (m.text) body.append(el("div", "bubble", m.text));
     if ((m.files || []).length) {
@@ -1738,6 +2053,15 @@ function addMessage(m, backfill) {
     div.append(body);
   }
   div._m = m;
+  return div;
+}
+
+function addMessage(m, backfill) {
+  // 即使历史补全已显示这条消息，也要推进本轮服务器游标。
+  if (!backfill && m.id > lastId) lastId = m.id;
+  if (known.has(m.id)) return;
+  known.add(m.id);
+  const div = messageNode(m);
   div.hidden = selected !== null && !involves(m, selected);
   const fresh = booted && !backfill;
   if (fresh) div.classList.add("enter");  // 首次加载和补全的历史不播动画，之后的新消息淡入
@@ -1745,7 +2069,7 @@ function addMessage(m, backfill) {
   const list = $("list"), last = list.lastElementChild;
   if (last && last._m.id > m.id) list.insertBefore(div, [...list.children].find(e => e._m.id > m.id));
   else list.append(div);
-  if (fresh && !mine && div.className.startsWith("msg")) startTalk(m.sender);
+  if (fresh && m.sender !== "user" && div.className.startsWith("msg")) startTalk(m.sender);
 }
 
 // 连不上网页服务时在顶上提示；否则页面看起来一切正常，其实已经收不到新消息
@@ -1766,17 +2090,20 @@ async function poll() {
   setConn("");
   const s = $("stream");
   const atBottom = s.scrollTop + s.clientHeight >= s.scrollHeight - 40;
+  groupsById = Object.fromEntries((st.groups || []).map(g => [g.id, g]));
   for (const m of (st.messages || [])) addMessage(m);
   for (const [id, d] of Object.entries(st.deliveries || {})) setDelivery(id, d);
   wakeInfo = st.wake || null;
   renderWakeBtn();
   renderAgents(st.agents || []);
+  renderGroups();
+  if (selectedGroup) { renderGroupHeader(); loadGroupHistory(selectedGroup); }
   for (const [name, a] of Object.entries((wakeInfo || {}).agents || {})) {
     if (name in lastWoken && a.woken_at && a.woken_at !== lastWoken[name]) startWoke(name);
     lastWoken[name] = a.woken_at;
   }
   updateEmpty();
-  if ((st.messages || []).length && atBottom) s.scrollTop = s.scrollHeight;
+  if (!selectedGroup && (st.messages || []).length && atBottom) s.scrollTop = s.scrollHeight;
   booted = true;
 }
 
@@ -1852,7 +2179,7 @@ function renderChips() {
   updateSend();
 }
 
-function updateSend() { $("send").disabled = !$("text").value.trim() && !pendingFiles.length; }
+function updateSend() { $("send").disabled = !!groupsById[selectedGroup]?.archived_at || (!$("text").value.trim() && !pendingFiles.length); }
 
 function autosize() {  // 输入框随内容变高，最高到 40% 屏幕高度
   const t = $("text");
@@ -1863,17 +2190,19 @@ function autosize() {  // 输入框随内容变高，最高到 40% 屏幕高度
 async function send() {
   const text = $("text").value;
   const to = $("to").value.split(",").map(s => s.trim()).filter(Boolean);
+  if (groupsById[selectedGroup]?.archived_at) return;
   if (!text.trim() && !pendingFiles.length) return;
   let out;
   try {
     out = await api("/api/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text, to: to, files: pendingFiles.map(f => f.path) }),
+      body: JSON.stringify({text, ...(selectedGroup ? {group:selectedGroup} : {to}), files:pendingFiles.map(f => f.path)}),
     });
   } catch (e) { alert("发送失败：连不上 kopitiam web"); return; }
   if (!out.ok) { alert(out.message || "发送失败"); return; }
   $("text").value = "";
+  hideMentions();
   autosize();
   pendingFiles = []; renderChips();
   poll();
@@ -1947,9 +2276,24 @@ $("wakeBtn").onclick = openWake;
 $("modal").onclick = (e) => { if (e.target === $("modal")) closeModal(); };  // 点弹窗外面关闭
 $("hiddenBack").onclick = closeHidden;
 $("send").onclick = send;
+$("groupOptions").onclick = () => openGroupEditor(groupsById[selectedGroup]);
 $("showAll").onclick = () => select(null);
-$("text").addEventListener("input", () => { updateSend(); autosize(); });
-$("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.ctrlKey) send(); });
+$("text").addEventListener("input", () => { updateSend(); autosize(); updateMentions(); });
+$("text").addEventListener("click", updateMentions);
+$("text").addEventListener("keydown", (e) => {
+  if (e.isComposing) return;
+  if (!$("mentions").hidden && !e.ctrlKey) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault(); mentionIndex = (mentionIndex + (e.key === "ArrowDown" ? 1 : -1) + mentionChoices.length) % mentionChoices.length;
+      renderMentions(); return;
+    }
+    if (e.key === "Enter") { e.preventDefault(); insertMention(mentionChoices[mentionIndex].name); return; }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); hideMentions(); return; }
+  }
+  if (e.key === "Enter" && e.ctrlKey) { e.preventDefault(); send(); }
+});
+document.addEventListener("click", e => { if (e.target !== $("text") && !$("mentions").contains(e.target)) hideMentions(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && selectedGroup) loadGroupHistory(selectedGroup); });
 $("pick").onclick = () => $("file").click();
 $("file").onchange = (e) => { upload([...e.target.files]); e.target.value = ""; };
 $("menuBtn").onclick = () => { $("side").classList.add("open"); $("backdrop").classList.add("show"); };
