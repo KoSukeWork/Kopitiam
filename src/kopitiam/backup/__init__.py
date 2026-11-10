@@ -374,9 +374,6 @@ class BackupManager:
                     _prune(client)
                     message = "备份完成：" + name
                 else:
-                    self._update("暂停后台服务")
-                    self.read_only = True
-                    self.on_restore()
                     self._update("下载")
                     encrypted, archive = temp / name, temp / "backup.zip"
                     client.download(name, encrypted, lambda n, total: self._update("下载", int(n * 100 / max(1, total)) if total else 0))
@@ -384,6 +381,10 @@ class BackupManager:
                     crypto.decrypt_file(encrypted, archive, password)
                     self._update("校验")
                     _, attachments = _validate_archive(archive, temp / "checked")
+                    _check_processes()
+                    self._update("暂停后台服务")
+                    self.read_only = True
+                    self.on_restore()
                     with self.write_guard():
                         message = _apply_restore(temp / "checked", attachments, self._update)
             self._update("完成", 100, state="done", message=message)

@@ -11,13 +11,14 @@ import os
 import secrets
 import subprocess
 import sys
+import threading
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from . import db, peer
+from . import backup, db, peer
 from .config import FILE_MAX, PEER_PORT, WEB_PORT, files_dir, safe
 from .db import Chat
 from .wake import detector
@@ -35,6 +36,18 @@ SEND_BODY_MAX = 1024 * 1024
 class _WebServer(ThreadingHTTPServer):
     peer_service: peer.PeerService | None = None
     wake_service: WakeService | None = None
+
+    def pause_for_restore(self) -> None:
+        # 先让两个后台服务都看到停止标记，再等待已有操作退出。
+        if self.peer_service:
+            self.peer_service.read_only = True
+            self.peer_service._stop.set()
+        if self.wake_service:
+            self.wake_service.pause_for_restore()
+        if self.peer_service:
+            self.peer_service.pause_for_restore()
+        with self.request_lock:
+            pass
 
     def server_close(self) -> None:  # 网页关掉时，团队端口、后台投递线程、自动唤醒一起停
         super().server_close()
@@ -100,6 +113,8 @@ def make_server(port: int = WEB_PORT, *, peer_host: str = "0.0.0.0", peer_port: 
         owner = _port_owner(port)
         raise SystemExit(f"错误：端口 {port} 被占用（{owner or e}）。换一个端口：kopitiam web --port {port + 10}")
     srv.peer_service = service
+    srv.request_lock = threading.RLock()
+    srv.backup = backup.BackupManager(on_restore=srv.pause_for_restore, write_guard=lambda: srv.request_lock)
     if share if share is not None else db.get_meta("share") == "1":
         try:
             service.start_sharing()
@@ -170,6 +185,18 @@ class _Handler(BaseHTTPRequestHandler):
     # ---- 路由 ----
 
     def do_GET(self) -> None:
+        if urlparse(self.path).path in ("/api/backup", "/api/backup/list"):
+            if not self._host_ok() or not self._token_header_ok():
+                return self._deny()
+            try:
+                return self._json(self.server.backup.status() if urlparse(self.path).path == "/api/backup"
+                                  else self.server.backup.list())
+            except (ValueError, OSError) as e:
+                return self._json({"ok": False, "message": str(e)}, 400)
+        with self.server.request_lock:
+            return self._get()
+
+    def _get(self) -> None:
         if not self._host_ok():
             return self._deny()
         u = urlparse(self.path)
@@ -185,6 +212,7 @@ class _Handler(BaseHTTPRequestHandler):
             chat = Chat()
             msgs = self._with_urls(chat.messages_after(after, 200))
             return self._json({"agents": chat.agents_brief(), "messages": msgs,
+                               "restart_required": self.server.backup.read_only,
                                "groups": chat.groups_brief(), "deliveries": chat.delivery_updates(), "wake": wake_service.overview()})
         if u.path == "/api/team":
             if not self._token_header_ok():
@@ -219,6 +247,45 @@ class _Handler(BaseHTTPRequestHandler):
         return self._deny(404)
 
     def do_POST(self) -> None:
+        if not self._host_ok() or not self._token_header_ok():
+            return self._deny()
+        if urlparse(self.path).path.startswith("/api/backup/"):
+            return self._backup_post()
+        if self.server.backup.read_only:
+            return self._json({"ok": False, "message": backup.READ_ONLY}, 503)
+        with self.server.request_lock:
+            if self.server.backup.read_only:
+                return self._json({"ok": False, "message": backup.READ_ONLY}, 503)
+            return self._post()
+
+    def _backup_post(self) -> None:
+        data = self._read_json()
+        if data is None:
+            return
+        manager = self.server.backup
+        try:
+            path = urlparse(self.path).path
+            if path == "/api/backup/config":
+                with backup._file_lock():
+                    return self._json({"ok": True, "config": backup.store.save(data)})
+            if path == "/api/backup/test":
+                count = manager.test()
+                return self._json({"ok": True, "count": count, "message": f"连接成功，现有 {count} 份备份"})
+            if path == "/api/backup/run":
+                if manager.read_only:
+                    return self._json({"ok": False, "message": backup.READ_ONLY}, 503)
+                return self._json({"ok": True, "job": manager.start("backup", with_files=data.get("files", True))})
+            if path == "/api/backup/restore":
+                return self._json({"ok": True, "job": manager.start("restore", name=data.get("name"),
+                                                                  backup_password=data.get("backup_password"))})
+            if path == "/api/backup/delete":
+                manager.delete(data.get("name"))
+                return self._json({"ok": True, "message": "已删除备份"})
+            return self._deny(404)
+        except (ValueError, OSError) as e:
+            return self._json({"ok": False, "message": str(e)}, 409 if str(e) == backup.BUSY else 400)
+
+    def _post(self) -> None:
         if not self._host_ok():
             return self._deny()
         if not self._token_header_ok():
@@ -980,6 +1047,30 @@ main.page > #groupHeader { display:none; }
   body.in-group #showAll { font-size:11px; padding:5px 7px; }
   #groupAbout p { max-height:100px; }
 }
+.backup-fields { display:grid; grid-template-columns:1fr 1fr; gap:10px 12px; margin:12px 0; }
+.backup-field { display:flex; flex-direction:column; gap:5px; min-width:0; font-size:12px; color:var(--ink-2); }
+.backup-field.wide { grid-column:1 / -1; }
+.backup-field .tin { width:100%; min-width:0; box-sizing:border-box; }
+.backup-settings summary { cursor:pointer; font-weight:600; font-size:14px; }
+.backup-warning { padding:9px 12px; border-radius:9px; background:rgba(245,158,11,.12); color:var(--ink); font-size:12px; line-height:1.7; }
+.backup-progress { width:100%; height:6px; accent-color:var(--accent); margin:10px 0 4px; }
+.backup-status { font-size:12px; line-height:1.7; overflow-wrap:anywhere; color:var(--muted); }
+.backup-status.failed { color:#e5484d; }
+.backup-row { display:flex; gap:12px; align-items:center; padding:12px 0; border-bottom:1px solid var(--line); }
+.backup-info { flex:1; min-width:0; overflow-wrap:anywhere; }
+.backup-info strong { font-size:13px; font-weight:600; }
+.backup-actions { display:flex; gap:6px; }
+.backup-panel h3 { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.backup-confirm { margin-top:12px; padding:12px; border:1px solid var(--line); border-radius:10px; }
+.backup-confirm .trow { margin-top:10px; }
+.backup-check { display:flex; align-items:center; gap:8px; font-size:13px; }
+.backup-check input { accent-color:var(--accent); }
+#restoreBanner { flex-shrink:0; padding:10px 20px; background:rgba(245,158,11,.16); color:var(--ink); font-size:13px; border-bottom:1px solid rgba(245,158,11,.3); }
+@media(max-width:500px) {
+  .backup-fields { grid-template-columns:1fr; }
+  .backup-row { flex-wrap:wrap; gap:8px; }
+  .backup-actions { margin-left:auto; }
+}
 </style>
 </head>
 <body>
@@ -987,6 +1078,7 @@ main.page > #groupHeader { display:none; }
   <div class="brand"><span class="mark" data-logo></span><div><div class="logo">kopitiam</div><div class="sub" id="brandsub">本地聊天室</div></div></div>
   <div id="sideScroll"><div id="groups"></div><div id="agents"></div></div>
   <div id="themes">
+    <button id="backupBtn" class="sidebtn"><span data-icon="cloud"></span>云备份<span class="cur" id="backupCur">未设置</span></button>
     <button id="wakeBtn" class="sidebtn"><span data-icon="bolt"></span>自动唤醒<span class="cur" id="wakeCur"></span></button>
     <button id="themeBtn" class="sidebtn" aria-haspopup="true"><span data-icon="palette"></span>主题<span class="cur" id="themeCur"></span></button>
     <div id="themePop" hidden></div>
@@ -1012,6 +1104,7 @@ main.page > #groupHeader { display:none; }
     <div id="groupMembers"></div>
   </div>
   <div id="conn" role="status" hidden></div>
+  <div id="restoreBanner" role="status" hidden>正在恢复 / 已恢复，请关掉 kopitiam web 再重新打开，再重开各个 agent。</div>
   <div id="stream">
     <div id="list"></div>
     <div id="groupList" hidden></div>
@@ -1067,6 +1160,7 @@ function el(tag, cls, text) {
 
 // ---- 图标：线条 SVG。innerHTML 只用于下面这些写死的常量，不碰任何消息内容 ----
 const ICONS = {
+  cloud: '<path d="M6 17.5a4 4 0 0 1-.6-8 6.5 6.5 0 0 1 12.5 1.7 3.2 3.2 0 1 1 .1 6.3"/><path d="M12 20V11m-3 3 3-3 3 3"/>',
   clip: '<path d="M20.5 11.5l-8.2 8.2a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/>',
   send: '<path d="M12 19V5"/><path d="M5.5 11.5L12 5l6.5 6.5"/>',
   menu: '<path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h10"/>',
@@ -1208,6 +1302,185 @@ function flash(where, out, okText) {
   where.append(el("div", out.ok ? "mok" : "merr", out.message || (out.ok ? okText || "好了" : "失败")));
 }
 
+// ---- 云备份：密码只输入，从不从服务端取回 ----
+let backupInfo = null, backupView = null, backupPolling = false, restartRequired = false;
+function applyRestoreState(required) {
+  if (!required) return;
+  restartRequired = true;
+  $("restoreBanner").hidden = false;
+  for (const id of ["text", "to", "pick", "file", "send"]) $(id).disabled = true;
+  hideMentions();
+}
+function backupAge(iso) {
+  const minutes = Math.max(0, Math.floor((Date.now() - new Date(iso)) / 60000));
+  return minutes < 1 ? "刚刚" : minutes < 60 ? minutes + " 分钟前" : minutes < 1440 ? Math.floor(minutes / 60) + " 小时前" : Math.floor(minutes / 1440) + " 天前";
+}
+async function pollBackup() {
+  if (backupPolling) return;
+  backupPolling = true;
+  try {
+    const state = await api("/api/backup");
+    if (!state.config) return;
+    backupInfo = state;
+    applyRestoreState(state.restart_required);
+    const j = state.job, running = j.state === "running";
+    $("backupCur").textContent = running ? (j.kind === "backup" ? "备份中 " : "恢复中 ") + j.progress + "%"
+      : j.state === "failed" ? "操作失败" : state.last_backup ? backupAge(state.last_backup.time) : state.config.has_password ? "尚未备份" : "未设置";
+    if (backupView) backupView(state);
+  } catch (e) { $("backupCur").textContent = "连接中断"; }
+  finally { backupPolling = false; }
+}
+function backupNotice(where, result, fallback="操作完成") {
+  where.textContent = result.message || result.error || (result.ok ? fallback : "操作失败");
+  where.className = result.ok ? "mok" : "merr";
+}
+async function openBackup() {
+  closeSide();
+  const body = el("div", "backup-panel"), loading = el("div", "mnote", "正在读取备份设置…");
+  body.append(loading);
+  openModal("云备份", body, () => { backupView = null; });
+  const state = await api("/api/backup").catch(() => ({message:"连不上 kopitiam web"}));
+  if (!body.isConnected) return;
+  if (!state.config) { loading.textContent = state.message || "无法读取设置"; return; }
+  body.replaceChildren();
+  const config = state.config, settings = el("details", "tsec backup-settings");
+  settings.open = !config.has_password || !config.has_backup_password;
+  settings.append(el("summary", "", "WebDAV 设置" + (config.has_password ? " · 已设置" : "")));
+  const grid = el("div", "backup-fields"), inputs = {};
+  function field(key, label, value, placeholder, secret=false, wide=false) {
+    const wrap = el("label", "backup-field" + (wide ? " wide" : "")), input = el("input", "tin");
+    input.type = secret ? "password" : "text";
+    input.value = value || ""; input.placeholder = placeholder || "";
+    input.autocomplete = secret ? "new-password" : "off";
+    input.spellcheck = false;
+    wrap.append(el("span", "", label), input); grid.append(wrap); inputs[key] = input;
+  }
+  field("url", "WebDAV 地址", config.url, "https://dav.jianguoyun.com/dav/", false, true);
+  field("user", "用户名", config.user, "你的账号 / 邮箱");
+  field("folder", "远程文件夹", config.folder, "kopitiam");
+  field("password", "应用密码", "", config.has_password ? "已设置 · 输入新密码修改" : "云盘的应用密码", true, true);
+  field("backup_password", "备份密码", "", config.has_backup_password ? "已设置 · 输入新密码修改" : "用于加密备份", true);
+  field("confirmation", "确认备份密码", "", "修改时再输入一次", true);
+  const warning = el("div", "backup-warning", "忘了备份密码，备份就恢复不了。请把它保存在可靠的地方；在另一台电脑恢复时也需要它。");
+  const save = el("button", "btn", "保存设置"), test = el("button", "btn", "测试连接"), settingNote = el("div");
+  const settingControls = trow(save, test);
+  settings.append(grid, warning, settingControls, settingNote);
+  settingControls.style.marginTop = "12px";
+  save.onclick = async () => {
+    if (inputs.backup_password.value !== inputs.confirmation.value) return backupNotice(settingNote, {message:"两次备份密码不一致"});
+    save.disabled = true;
+    try {
+      const values = Object.fromEntries(Object.entries(inputs).filter(([key]) => key !== "confirmation").map(([key, input]) => [key, input.value]));
+      const out = await post("/api/backup/config", values);
+      backupNotice(settingNote, out, "设置已保存，密码已在本机加密保存");
+      if (out.ok) {
+        for (const key of ["password", "backup_password", "confirmation"]) inputs[key].value = "";
+        for (const key of ["password", "backup_password"]) if (out.config["has_" + key]) inputs[key].placeholder = "已设置 · 输入新密码修改";
+        settings.querySelector("summary").textContent = "WebDAV 设置 · 已设置";
+        await pollBackup(); await refreshList();
+      }
+    } catch (e) { backupNotice(settingNote, {message:"保存失败，请检查连接"}); }
+    finally { save.disabled = false; }
+  };
+  test.onclick = async () => {
+    test.disabled = true;
+    try { backupNotice(settingNote, await post("/api/backup/test", {})); }
+    catch (e) { backupNotice(settingNote, {message:"测试失败，请检查连接"}); }
+    finally { test.disabled = false; }
+  };
+  const runSection = tsec("立即备份", "加密后上传到你的云盘；每台电脑保留最近 10 份。"), check = el("input");
+  check.type = "checkbox"; check.checked = true;
+  const size = el("span"), label = el("label", "backup-check"); label.append(check, size);
+  const run = el("button", "bigbtn", "加密并备份"), progress = el("progress", "backup-progress"), status = el("div", "backup-status");
+  progress.max = 100; progress.value = 0; status.setAttribute("role", "status");
+  const runNote = el("div"), retryBox = el("div", "backup-confirm"); retryBox.hidden = true;
+  const retryPassword = el("input", "tin"); retryPassword.type = "password"; retryPassword.placeholder = "这份备份的密码"; retryPassword.setAttribute("aria-label", "这份备份的密码");
+  const retry = el("button", "btn", "用此密码重试");
+  retryBox.append(el("div", "mnote", "密码不对或文件损坏。来自另一台电脑的备份，请输入创建它时使用的备份密码。"), trow(retryPassword, retry));
+  async function startRestore(name, password) {
+    const out = await post("/api/backup/restore", {name, ...(password ? {backup_password:password} : {})});
+    backupNotice(runNote, out, "恢复任务已开始");
+    if (out.ok) retryPassword.value = "";
+    await pollBackup();
+  }
+  retry.onclick = async () => {
+    if (!retryPassword.value) return retryPassword.focus();
+    retry.disabled = true;
+    try { await startRestore(backupInfo?.job.name || state.job.name, retryPassword.value); }
+    catch (e) { backupNotice(runNote, {message:"无法开始恢复，请检查连接"}); }
+    finally { retry.disabled = false; }
+  };
+  run.onclick = async () => {
+    run.disabled = true;
+    try { backupNotice(runNote, await post("/api/backup/run", {files:check.checked}), "备份任务已开始"); await pollBackup(); }
+    catch (e) { backupNotice(runNote, {message:"无法开始备份，请检查连接"}); run.disabled = false; }
+  };
+  runSection.append(label, run, progress, status, retryBox, runNote);
+  const listSection = tsec("备份列表"), list = el("div"), listNote = el("div"), confirmation = el("div", "backup-confirm");
+  confirmation.hidden = true;
+  const refresh = el("button", "btn", "刷新列表"); listSection.querySelector("h3").append(refresh);
+  function confirmAction(entry, remove) {
+    confirmation.hidden = false; confirmation.replaceChildren();
+    confirmation.append(el("div", "mnote", remove ? "永久删除这份云端备份：" + entry.name + "？" :
+      "恢复将覆盖现在的聊天记录。同名且内容不同的附件会先连同现有数据库保存在本机副本目录。请先关闭各个 agent；恢复后要关闭并重新打开 kopitiam web，再重开 agent。"));
+    const go = el("button", "btn" + (remove ? " danger" : ""), remove ? "确认删除" : "确认恢复"), cancel = el("button", "btn", "取消");
+    cancel.onclick = () => { confirmation.hidden = true; };
+    go.onclick = async () => {
+      go.disabled = true;
+      try {
+        if (remove) { backupNotice(listNote, await post("/api/backup/delete", {name:entry.name})); await refreshList(); }
+        else await startRestore(entry.name);
+        confirmation.hidden = true;
+      } catch (e) { backupNotice(listNote, {message:"操作失败，请检查连接"}); }
+      finally { go.disabled = false; }
+    };
+    confirmation.append(trow(go, cancel)); confirmation.scrollIntoView({block:"nearest"});
+  }
+  async function refreshList() {
+    refresh.disabled = true;
+    try {
+      const entries = await api("/api/backup/list");
+      if (!body.isConnected) return;
+      list.replaceChildren();
+      if (!Array.isArray(entries)) { list.append(el("div", "mnote", entries.message || "请先保存 WebDAV 设置")); return; }
+      if (!entries.length) list.append(el("div", "mnote", "还没有云端备份。完成设置后，点上面的「加密并备份」。"));
+      for (const item of entries) {
+        const row = el("div", "backup-row"), info = el("div", "backup-info"), actions = el("div", "backup-actions");
+        info.append(el("strong", "", item.time ? item.time.replace("T", " ") : "时间未知"), el("div", "mnote", item.host + " · " + fmtSize(item.size)));
+        info.title = item.name;
+        for (const remove of [false, true]) {
+          const button = el("button", "btn" + (remove ? " danger" : ""), remove ? "删除" : "恢复");
+          button.disabled = backupInfo?.job.state === "running";
+          button.onclick = () => confirmAction(item, remove); actions.append(button);
+        }
+        row.append(info, actions); list.append(row);
+      }
+    } catch (e) { backupNotice(listNote, {message:"读取列表失败，请检查连接"}); }
+    finally { refresh.disabled = false; }
+  }
+  refresh.onclick = refreshList;
+  listSection.append(list, confirmation, listNote);
+  body.append(settings, runSection, listSection);
+  let previousJob = "";
+  backupView = s => {
+    const j = s.job, running = j.state === "running";
+    if (!running && runNote.className === "mok") runNote.textContent = "";
+    size.textContent = "包含附件 · " + fmtSize(s.files_bytes);
+    run.disabled = running || s.restart_required || !s.config.has_password || !s.config.has_backup_password;
+    check.disabled = running;
+    progress.hidden = j.state === "idle"; progress.value = j.progress;
+    status.className = "backup-status" + (j.state === "failed" ? " failed" : "");
+    status.textContent = running ? j.step + (j.progress ? " · " + j.progress + "%" : "…") : j.message || "备份由你手动触发，不会自动上传。";
+    retryBox.hidden = !(j.state === "failed" && j.needs_password);
+    for (const button of list.querySelectorAll("button")) button.disabled = running;
+    const key = j.started_at + j.state;
+    if (j.state === "done" && previousJob && previousJob !== key) refreshList();
+    previousJob = key;
+  };
+  backupInfo = state; backupView(state); applyRestoreState(state.restart_required);
+  await refreshList();
+}
+
 // ---- 群聊 ----
 function groupStack(g) {
   const stack = el("span", "group-stack"), members = g.members.filter(n => n !== "user");
@@ -1286,8 +1559,8 @@ function renderGroupHeader() {
   const add = el("button", "member-chip"); add.append(icon("plus", 15));
   add.title = "添加成员"; add.setAttribute("aria-label", "添加成员"); add.onclick = () => openGroupEditor(g, true);
   members.append(add);
-  $("text").disabled = !!g.archived_at;
-  $("pick").disabled = !!g.archived_at;
+  $("text").disabled = restartRequired || !!g.archived_at;
+  $("pick").disabled = restartRequired || !!g.archived_at;
   $("text").placeholder = g.archived_at ? "这个群已归档，在群聊设置里恢复后继续" : "@ 点名，不 @ 就是发给全体成员";
   updateSend();
 }
@@ -1993,7 +2266,7 @@ function select(name) {
   $("groupHeader").hidden = true; $("groupOptions").hidden = true;
   $("list").hidden = false; $("groupList").hidden = true;
   $("to").closest(".torow").hidden = false;
-  $("text").disabled = false; $("pick").disabled = false; $("text").placeholder = "写点什么…";
+  $("text").disabled = restartRequired; $("pick").disabled = restartRequired; $("text").placeholder = "写点什么…";
   selected = name;
   updateSend(); renderGroups();
   updateConvbar();
@@ -2106,6 +2379,8 @@ async function poll() {
   try { st = await api("/api/state?after=" + lastId); } catch (e) { setConn("down"); return; }
   if (st.error === "forbidden") { setConn("token"); return; }  // token 不对：服务重启过
   setConn("");
+  applyRestoreState(st.restart_required);
+  if (restartRequired) return;
   const s = $("stream");
   const atBottom = s.scrollTop + s.clientHeight >= s.scrollHeight - 40;
   groupsById = Object.fromEntries((st.groups || []).map(g => [g.id, g]));
@@ -2197,7 +2472,7 @@ function renderChips() {
   updateSend();
 }
 
-function updateSend() { $("send").disabled = !!groupsById[selectedGroup]?.archived_at || (!$("text").value.trim() && !pendingFiles.length); }
+function updateSend() { $("send").disabled = restartRequired || !!groupsById[selectedGroup]?.archived_at || (!$("text").value.trim() && !pendingFiles.length); }
 
 function autosize() {  // 输入框随内容变高，最高到 40% 屏幕高度
   const t = $("text");
@@ -2206,6 +2481,7 @@ function autosize() {  // 输入框随内容变高，最高到 40% 屏幕高度
 }
 
 async function send() {
+  if (restartRequired) return;
   const text = $("text").value;
   const to = $("to").value.split(",").map(s => s.trim()).filter(Boolean);
   if (groupsById[selectedGroup]?.archived_at) return;
@@ -2227,6 +2503,7 @@ async function send() {
 }
 
 async function upload(files) {
+  if (restartRequired) return;
   for (const f of files) {
     const r = await api("/api/upload?name=" + encodeURIComponent(f.name), {
       method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: f,
@@ -2291,6 +2568,7 @@ document.addEventListener("keydown", (e) => {
 });
 $("mclose").onclick = closeModal;
 $("wakeBtn").onclick = openWake;
+$("backupBtn").onclick = openBackup;
 $("modal").onclick = (e) => { if (e.target === $("modal")) closeModal(); };  // 点弹窗外面关闭
 $("hiddenBack").onclick = closeHidden;
 $("send").onclick = send;
@@ -2317,6 +2595,8 @@ $("file").onchange = (e) => { upload([...e.target.files]); e.target.value = ""; 
 $("menuBtn").onclick = () => { $("side").classList.add("open"); $("backdrop").classList.add("show"); };
 $("backdrop").onclick = closeSide;
 poll();
+pollBackup();
+setInterval(pollBackup, 1500);
 setInterval(poll, 1500);
 </script>
 </body>

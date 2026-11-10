@@ -55,6 +55,9 @@ def test_settings_dpapi_and_public_secrets(home, dav):
         with pytest.raises(ValueError):
             store.save(values)
     assert store.credentials()["password"] == secret
+    with pytest.raises(ValueError, match="换了服务器要重新填"):
+        store.save({"url": "https://different.example.com/dav/"})
+    assert store.public()["url"] == dav.url
 
 
 def test_backup_restore_roundtrip(configured, home):
@@ -147,12 +150,25 @@ def test_busy_lock_across_managers(configured, monkeypatch):
 
 
 def test_wrong_password_can_retry(configured, home):
+    called = []
+    configured.on_restore = lambda: called.append(True)
     seed(home)
     name = finish(configured, "backup")["name"]
     failed = finish(configured, "restore", name=name, backup_password="incorrect")
     assert failed["state"] == "failed" and failed["needs_password"]
+    assert configured.read_only is False and called == []
     assert not list(home.glob("restore-saved-*"))
     assert finish(configured, "restore", name=name, backup_password="备份密钥")["state"] == "done"
+    assert configured.read_only and called == [True]
+
+
+def test_download_failure_leaves_services_running(configured, dav):
+    called = []
+    configured.on_restore = lambda: called.append(True)
+    dav.fail["GET"] = 503
+    job = finish(configured, "restore", name="kopitiam-test.kpbak")
+    assert job["state"] == "failed" and not job["needs_password"]
+    assert not configured.read_only and called == []
 
 
 def make_zip(home, *, extra=None, manifest=None, bad_db=None):

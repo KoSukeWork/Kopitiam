@@ -175,6 +175,8 @@ class PeerService:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._worker: threading.Thread | None = None
+        self.request_lock = threading.RLock()
+        self.read_only = False
         self.ping_errors: dict[int, str] = {}  # 同事 id → 最近一次定时联系失败的原因（成功就删掉）
 
     @property
@@ -217,6 +219,17 @@ class PeerService:
         """进程退出：停后台线程、关端口（不改「下次启动是否开启」的设置）。"""
         self._stop.set()
         self._close_server()
+
+    def pause_for_restore(self) -> None:
+        """保留监听端口返回 503，让同事的发件箱稍后重试。"""
+        self.read_only = True
+        self._stop.set()
+        if self._worker:
+            self._worker.join(timeout=30)
+            if self._worker.is_alive():
+                raise ValueError("团队投递还在结束当前操作，请稍后重试恢复")
+        with self.request_lock:
+            pass  # 等已经进入的请求完成，后续请求只会得到 503。
 
     # -- 配对码（别人来加我） --
 
@@ -286,6 +299,8 @@ class PeerService:
         while not self._stop.wait(2):
             try:
                 self.deliver_due()
+                if self._stop.is_set():
+                    break
                 if time.time() - last_ping > 20:
                     self.ping_all()
                     last_ping = time.time()
@@ -299,6 +314,8 @@ class PeerService:
         """定时联系每个同事：顺便告诉对方我的团队端口。失败原因记下来给团队面板显示
         （以前不显示：比如两台电脑时间差太多，配对能成功、之后全被拒绝，哪边都看不出来）。"""
         for p in db.list_peers():
+            if self._stop.is_set():
+                return
             if p["address"].endswith(":0"):
                 self.ping_errors[p["id"]] = NOT_SHARING  # 连不进去；等对方来 ping 我时带上新端口
                 continue
@@ -312,6 +329,8 @@ class PeerService:
     def deliver_due(self) -> None:
         me = db.node_id()
         for item in db.due_outbox():
+            if self._stop.is_set():
+                return
             uid = f"{me}:{item['message_id']}"
             if item["address"].endswith(":0"):  # 配对时对方没开团队连接（端口 0）
                 db.outbox_retry(item["ob_id"], item["tries"], NOT_SHARING)
@@ -319,11 +338,15 @@ class PeerService:
             try:
                 metas = []
                 for i, f in enumerate(item["files"]):
+                    if self._stop.is_set():
+                        return
                     data = Path(f["path"]).read_bytes()  # 单个 ≤ 20 MB
                     call(item["address"], "POST", f"/peer/file?uid={quote(uid)}&i={i}", raw=data,
                          secret=item["secret"], my_port=self.bound_port, timeout=120)
                     metas.append({"i": i, "name": f["orig_name"], "size": len(data),
                                   "sha256": hashlib.sha256(data).hexdigest()})
+                if self._stop.is_set():
+                    return
                 call(item["address"], "POST", "/peer/message", {"uid": uid, "text": item["text"], "files": metas},
                      secret=item["secret"], my_port=self.bound_port, timeout=30)
                 db.outbox_done(item["ob_id"])
@@ -400,11 +423,23 @@ class _PeerHandler(BaseHTTPRequestHandler):
         return peer
 
     def do_GET(self) -> None:
+        with self.service.request_lock:
+            if self.service.read_only:
+                return self._err(503, "正在恢复 / 已恢复，请重开 kopitiam web")
+            return self._get()
+
+    def _get(self) -> None:
         if urlparse(self.path).path == "/peer/hello":
             return self._json({"app": "kopitiam", "proto": PROTO, "node_id": db.node_id(), "name": db.display_name()})
         self._err(404, "not found")
 
     def do_POST(self) -> None:
+        with self.service.request_lock:
+            if self.service.read_only:
+                return self._err(503, "正在恢复 / 已恢复，请重开 kopitiam web")
+            return self._post()
+
+    def _post(self) -> None:
         path = urlparse(self.path).path
         if path == "/peer/file":
             return self._file()

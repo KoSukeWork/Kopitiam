@@ -101,6 +101,14 @@ class WakeService:
         except Exception:
             pass
 
+    def pause_for_restore(self) -> None:
+        """等当前轮退出，之后不会再写入恢复后的数据库。"""
+        self.stop()
+        if self._thread:
+            self._thread.join(timeout=30)
+            if self._thread.is_alive():
+                raise ValueError("自动唤醒还在结束当前操作，请稍后重试恢复")
+
     def run_forever(self) -> None:
         """前台运行（kopitiam wake）：Ctrl+C 退出。"""
         self._loop()

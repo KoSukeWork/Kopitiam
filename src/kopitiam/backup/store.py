@@ -10,7 +10,7 @@ import threading
 from ctypes import wintypes
 
 from ..config import data_dir
-from .webdav import validate_folder, validate_url
+from .webdav import _origin, validate_folder, validate_url
 
 _LOCK = threading.RLock()
 
@@ -93,6 +93,8 @@ def save(values: dict) -> dict:
     with _LOCK:
         c = _read()
         url = validate_url(values.get("url", c.get("url", "")))
+        if c.get("url") and c.get("password") and _origin(url) != _origin(c["url"]) and not values.get("password"):
+            raise ValueError("换了服务器要重新填应用密码")
         user = values.get("user", c.get("user", ""))
         if not isinstance(user, str) or not user.strip() or ":" in user or any(x in user for x in "\r\n"):
             raise ValueError("请填写有效的 WebDAV 用户名")
