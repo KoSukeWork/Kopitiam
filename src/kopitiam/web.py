@@ -185,7 +185,7 @@ class _Handler(BaseHTTPRequestHandler):
             chat = Chat()
             msgs = self._with_urls(chat.messages_after(after, 200))
             return self._json({"agents": chat.agents_brief(), "messages": msgs,
-                               "deliveries": chat.delivery_updates(), "wake": wake_service.overview()})
+                               "groups": chat.groups_brief(), "deliveries": chat.delivery_updates(), "wake": wake_service.overview()})
         if u.path == "/api/team":
             if not self._token_header_ok():
                 return self._deny()
@@ -197,7 +197,16 @@ class _Handler(BaseHTTPRequestHandler):
         if u.path == "/api/messages":
             if not self._token_header_ok():
                 return self._deny()
-            name = parse_qs(u.query).get("with", [""])[0]
+            qs = parse_qs(u.query, keep_blank_values=True)
+            if "group" in qs:
+                try:
+                    group = self._positive_id(qs["group"][0])
+                    result = Chat().group_messages(self.user_id_value, group)
+                except ValueError as e:
+                    return self._json({"ok": False, "message": f"错误：{e}"}, 400)
+                result["messages"] = self._with_urls(result["messages"])
+                return self._json(result)
+            name = qs.get("with", [""])[0]
             return self._json({"messages": self._with_urls(Chat().messages_with(name, 200))})
         if u.path == "/api/hidden":
             if not self._token_header_ok():
@@ -222,7 +231,7 @@ class _Handler(BaseHTTPRequestHandler):
         if u.path == "/api/forget":
             return self._api_forget()
         handler = (self._TEAM_POSTS.get(u.path) or self._WAKE_POSTS.get(u.path) or self._AGENT_POSTS.get(u.path)
-                   or self._FILE_POSTS.get(u.path))
+                   or self._FILE_POSTS.get(u.path) or self._GROUP_POSTS.get(u.path))
         if handler:
             data = self._read_json()
             if data is None:
@@ -232,6 +241,31 @@ class _Handler(BaseHTTPRequestHandler):
             except (peer.PeerError, ValueError) as e:
                 return self._json({"ok": False, "message": f"错误：{e}"})
         return self._deny(404)
+
+    # ---- 群聊 ----
+
+    @staticmethod
+    def _positive_id(value) -> int:
+        if isinstance(value, bool) or not isinstance(value, (str, int)) or not str(value).isdigit() or int(value) < 1:
+            raise ValueError("群聊 id 要填正整数")
+        return int(value)
+
+    def _g_create(self, data: dict) -> dict:
+        return {"group": Chat().create_group(self.user_id_value, data.get("title"), data.get("about", ""), data.get("members", []))}
+
+    def _g_update(self, data: dict) -> dict:
+        gid = self._positive_id(data.get("id"))
+        return {"group": Chat().update_group(self.user_id_value, gid,
+                **{k: v for k, v in data.items() if k in ("title", "about", "add", "remove", "archived")})}
+
+    def _g_seen(self, data: dict) -> None:
+        gid = self._positive_id(data.get("group"))
+        upto = data.get("upto")
+        if isinstance(upto, bool) or not isinstance(upto, int) or upto < 0:
+            raise ValueError("upto 要填非负整数")
+        Chat().seen_group(gid, upto)
+
+    _GROUP_POSTS = {"/api/groups": _g_create, "/api/group": _g_update, "/api/seen": _g_seen}
 
     # ---- 自动唤醒 ----
 
@@ -399,17 +433,21 @@ class _Handler(BaseHTTPRequestHandler):
     # ---- 接口 ----
 
     def _api_send(self) -> None:
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > SEND_BODY_MAX:
-            return self._json({"ok": False, "error": "请求体太大"}, 413)
-        try:
-            data = json.loads(self.rfile.read(length).decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            return self._json({"ok": False, "error": "bad json"}, 400)
+        data = self._read_json()
+        if data is None:
+            return
+        group = None
+        if data.get("group") is not None:
+            try:
+                group = self._positive_id(data["group"])
+            except ValueError as e:
+                return self._json({"ok": False, "message": f"错误：{e}"}, 400)
+            if "to" in data:
+                return self._json({"ok": False, "message": "错误：群聊里用 @名字 点名，不用 to。"})
         text = str(data.get("text") or "")
-        to = [str(t) for t in (data.get("to") or [])]
+        to = None if group is not None else [str(t) for t in (data.get("to") or [])]
         files = [str(f) for f in (data.get("files") or [])]
-        out = Chat().send(self.user_id_value, text, to, files)
+        out = Chat().send(self.user_id_value, text, to, files, group)
         self._json({"ok": not out.startswith("错误："), "message": out})
 
     def _api_upload(self, qs) -> None:

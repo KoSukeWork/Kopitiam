@@ -1673,6 +1673,140 @@ class Chat:
                 rows.reverse()
             return self._to_json(c, rows)
 
+    # ---- 群聊管理：只有网页用户建群 / 编辑；agent 通过 send 的 @ 邀请 ----
+
+    @staticmethod
+    def _group_fields(title, about):
+        if not isinstance(title, str) or not 1 <= len(title.strip()) <= 40:
+            raise ValueError("群聊标题要在 1～40 个字符之间")
+        if not isinstance(about, str) or len(about) > 2000:
+            raise ValueError("群聊说明最多 2000 字")
+        return title.strip(), about
+
+    @staticmethod
+    def _member_names(c, names, *, adding=True):
+        if not isinstance(names, list) or any(not isinstance(n, str) for n in names):
+            raise ValueError("成员要填名字列表")
+        rows = []
+        for name in dict.fromkeys(names):
+            row = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
+            if row is None:
+                raise ValueError(f"找不到成员：{name}")
+            if row["kind"] in ("human", "remote"):
+                raise ValueError("只能添加或移除本机 agent；user 始终在群里，同事不能加入群聊")
+            if adding and (row["archived_at"] or row["trashed_at"]):
+                raise ValueError(f"{name} 已归档或在回收站，不能加入群聊")
+            rows.append(row)
+        return rows
+
+    def create_group(self, me: int, title: str, about: str = "", members: list[str] | None = None) -> dict:
+        title, about = self._group_fields(title, about)
+        with _conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                if self._me(c, me)["kind"] != "human":
+                    raise ValueError("只有用户能在网页上建群")
+                rows = self._member_names(c, members if members is not None else [])
+                gid = c.execute("INSERT INTO groups(title, about, created_at) VALUES(?, ?, ?)",
+                                (title, about, now_iso())).lastrowid
+                _group_event(c, gid, me, "created")
+                for row in rows:
+                    _add_member(c, gid, row["id"], me)
+                result = self._group_json(c, c.execute("SELECT * FROM groups WHERE id=?", (gid,)).fetchone())
+                c.execute("COMMIT")
+                return result
+            except BaseException:
+                c.execute("ROLLBACK")
+                raise
+
+    def update_group(self, me: int, group: int, **changes) -> dict:
+        with _conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                if self._me(c, me)["kind"] != "human":
+                    raise ValueError("只有用户能在网页上编辑群聊")
+                g = c.execute("SELECT * FROM groups WHERE id=?", (group,)).fetchone()
+                if g is None:
+                    raise ValueError(f"没有群聊 {group}")
+                title, about = self._group_fields(changes.get("title", g["title"]), changes.get("about", g["about"]))
+                add = self._member_names(c, changes.get("add", []))
+                remove = self._member_names(c, changes.get("remove", []), adding=False)
+                if {r["id"] for r in add} & {r["id"] for r in remove}:
+                    raise ValueError("不能同时添加和移除同一个成员")
+                if "archived" in changes and not isinstance(changes["archived"], bool):
+                    raise ValueError("archived 要填 true 或 false")
+                if title != g["title"]:
+                    c.execute("UPDATE groups SET title=? WHERE id=?", (title, group))
+                    _group_event(c, group, me, "renamed", detail=title)
+                if about != g["about"]:
+                    c.execute("UPDATE groups SET about=? WHERE id=?", (about, group))
+                    # NOTE: 说明的修改也记入时间线；用 updated 事件，detail 存新的说明。
+                    _group_event(c, group, me, "updated", detail=about)
+                for r in add:
+                    _add_member(c, group, r["id"], me)
+                for r in remove:
+                    if _group_member(c, group, r["id"]):
+                        c.execute("DELETE FROM group_members WHERE group_id=? AND agent_id=?", (group, r["id"]))
+                        _group_event(c, group, me, "removed", r["id"])
+                if "archived" in changes and changes["archived"] != bool(g["archived_at"]):
+                    c.execute("UPDATE groups SET archived_at=? WHERE id=?", (now_iso() if changes["archived"] else None, group))
+                    _group_event(c, group, me, "archived" if changes["archived"] else "restored")
+                result = self._group_json(c, c.execute("SELECT * FROM groups WHERE id=?", (group,)).fetchone())
+                c.execute("COMMIT")
+                return result
+            except BaseException:
+                c.execute("ROLLBACK")
+                raise
+
+    @staticmethod
+    def _group_json(c, g) -> dict:
+        members = [r[0] for r in c.execute("SELECT a.name FROM group_members m JOIN agents a ON a.id=m.agent_id"
+                                         " WHERE m.group_id=? ORDER BY a.id", (g["id"],))]
+        last = c.execute("SELECT m.id, m.created_at AS time, a.name AS sender, SUBSTR(m.text, 1, 100) AS preview"
+                         " FROM messages m JOIN agents a ON a.id=m.sender_id WHERE m.group_id=? ORDER BY m.id DESC LIMIT 1",
+                         (g["id"],)).fetchone()
+        count, unread = c.execute("SELECT COUNT(*), COALESCE(SUM(id>COALESCE((SELECT upto FROM group_seen WHERE group_id=?), 0)"
+                                  " AND sender_id<>(SELECT id FROM agents WHERE name='user')), 0) FROM messages WHERE group_id=?",
+                                  (g["id"], g["id"])).fetchone()
+        event_id = c.execute("SELECT COALESCE(MAX(id), 0) FROM group_events WHERE group_id=?", (g["id"],)).fetchone()[0]
+        return dict(g) | {"members": [*members, "user"], "last": dict(last) if last else None,
+                          "count": count, "unread": unread, "event_id": event_id}
+
+    def groups_brief(self) -> list[dict]:
+        with _conn() as c:
+            groups = [self._group_json(c, g) for g in c.execute("SELECT * FROM groups")]
+        return sorted(groups, key=lambda g: ((g["last"] or {}).get("time", g["created_at"]),
+                                             (g["last"] or {}).get("id", 0), g["id"]), reverse=True)
+
+    def group_messages(self, me: int, group: int, limit: int = 200) -> dict:
+        with _conn() as c:
+            try:
+                _check_group(c, group, me, history=True)
+            except _Fail as e:
+                raise ValueError(str(e).removeprefix("错误：")) from None
+            rows = list(reversed(c.execute("SELECT * FROM messages WHERE group_id=? ORDER BY id DESC LIMIT ?",
+                                          (group, max(1, min(limit, 200)))).fetchall()))
+            since = rows[0]["created_at"] if len(rows) == limit else ""
+            events = c.execute("SELECT e.id, e.at AS time, e.kind, e.detail, a.name AS actor, b.name AS agent"
+                               " FROM group_events e LEFT JOIN agents a ON a.id=e.actor_id LEFT JOIN agents b ON b.id=e.agent_id"
+                               " WHERE e.group_id=? AND e.at>=? ORDER BY e.at, e.id", (group, since)).fetchall()
+            return {"messages": self._to_json(c, rows), "events": [dict(e) for e in events]}
+
+    def seen_group(self, group: int, upto: int) -> None:
+        with _conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                if c.execute("SELECT 1 FROM groups WHERE id=?", (group,)).fetchone() is None:
+                    raise ValueError(f"没有群聊 {group}")
+                top = c.execute("SELECT COALESCE(MAX(id), 0) FROM messages WHERE group_id=?", (group,)).fetchone()[0]
+                c.execute("INSERT INTO group_seen(group_id, upto) VALUES(?, ?)"
+                          " ON CONFLICT(group_id) DO UPDATE SET upto=MAX(upto, excluded.upto)",
+                          (group, min(max(0, upto), top)))
+                c.execute("COMMIT")
+            except BaseException:
+                c.execute("ROLLBACK")
+                raise
+
     def messages_with(self, name: str, limit: int = 200) -> list[dict]:
         """某个 agent 发的、和单独发给它的最近 limit 条（id 升序）。网页进入对话时用来补全历史。"""
         with _conn() as c:
@@ -1709,6 +1843,8 @@ class Chat:
                 "sender_kind": kinds.get(m["sender_id"], "?"),
                 "to": [names.get(i, "?") for i in self._targets(m["to_ids"])],
                 "text": m["text"],
+                "group": m["group_id"],
+                "to_all": bool(m["to_all"]) if m["to_all"] is not None else None,
                 "files": [
                     {"name": a["orig_name"], "path": a["path"], "size": a["size"]}
                     for a in atts.get(m["id"], [])

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from kopitiam import config, web
+from kopitiam import db
 
 
 @pytest.fixture()
@@ -46,6 +47,80 @@ def _post(url: str, body: bytes, headers: dict | None = None):
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
+
+
+@pytest.mark.parametrize("path, method", [("/api/groups", "POST"), ("/api/group", "POST"),
+    ("/api/seen", "POST"), ("/api/send", "POST"), ("/api/messages?group=1", "GET")])
+def test_group_endpoints_require_token(server, path, method):
+    srv, token, _ = server
+    if method == "POST":
+        code, _ = _post(_base(srv) + path, b'{"group": 1}')
+    else:
+        code, _ = _get(_base(srv) + path)
+    assert code == 403
+
+
+def test_group_web_lifecycle(server, home):
+    import os
+    srv, token, _ = server
+    headers = {"X-Token": token}
+    def post(path, body):
+        status, raw = _post(_base(srv) + path, json.dumps(body).encode(), headers)
+        assert status == 200
+        return json.loads(raw)
+    def get(path):
+        status, raw = _get(_base(srv) + path, headers)
+        assert status == 200
+        return json.loads(raw)
+    a = db.claim("claude", cwd=str(home), name="api", pid=os.getpid())
+    b = db.claim("codex", cwd=str(home), name="codex@web", pid=os.getpid())
+    made = post("/api/groups", {"title": "分页", "about": "接上接口", "members": ["api"]})
+    assert made["ok"]
+    g = made["group"]["id"]
+    assert set(made["group"]["members"]) == {"api", "user"}
+    assert post("/api/send", {"group": g, "text": "@codex@web你好"})["ok"]
+    assert not post("/api/send", {"group": g, "text": "bad", "to": []})["ok"]
+    db.Chat().send(a, "@codex@web ready", group=g)
+    msgs = get(f"/api/messages?group={g}")
+    assert len(msgs["messages"]) == 2 and len(msgs["events"]) == 3
+    assert msgs["messages"][-1]["group"] == g and not msgs["messages"][-1]["to_all"]
+    state = get("/api/state")
+    assert state["groups"][0]["unread"] == 1
+    assert state["groups"][0]["count"] == 2
+    assert post("/api/seen", {"group": g, "upto": msgs["messages"][-1]["id"]})["ok"]
+    assert get("/api/state")["groups"][0]["unread"] == 0
+    assert post("/api/seen", {"group": g, "upto": 0})["ok"]  # 进度不能倒退
+    assert get("/api/state")["groups"][0]["unread"] == 0
+    changed = post("/api/group", {"id": g, "title": "分页完成", "about": "已验证", "remove": ["api"], "archived": True})
+    assert changed["ok"] and changed["group"]["archived_at"]
+    assert not post("/api/send", {"group": g, "text": "archived"})["ok"]
+    assert post("/api/group", {"id": g, "archived": False, "add": ["api"]})["ok"]
+    assert post("/api/send", {"group": g, "text": "继续"})["ok"]
+    assert post("/api/groups", {"title": "空群"})["ok"]
+    assert "restored" in [e["kind"] for e in get(f"/api/messages?group={g}")["events"]]
+    assert post("/api/send", {"text": "legacy broadcast", "to": []})["ok"]
+    assert get("/api/state")["messages"][-1]["group"] is None
+
+
+def test_group_web_validation_is_atomic(server, home):
+    srv, token, _ = server
+    headers = {"X-Token": token}
+    remote = db.add_peer("remote", "peer", "example:123", "secret")
+    for body in ({"title": ""}, {"title": "x" * 41}, {"title": "ok", "about": "x" * 2001},
+                 {"title": "ok", "members": [remote["alias"]]}, {"title": "ok", "members": ["user"]},
+                 {"title": "ok", "members": "peer"}):
+        status, raw = _post(_base(srv) + "/api/groups", json.dumps(body).encode(), headers)
+        assert status == 200 and not json.loads(raw)["ok"]
+    assert db.Chat().groups_brief() == []
+    g = db.Chat().create_group(db.user_id(), "original")["id"]
+    for body in ({"id": g, "title": "changed", "remove": ["user"]},
+                 {"id": g, "archived": "false"}, {"id": g, "add": [remote["alias"]]}, {"id": "bad"}):
+        _, raw = _post(_base(srv) + "/api/group", json.dumps(body).encode(), headers)
+        assert not json.loads(raw)["ok"]
+    assert db.Chat().groups_brief()[0]["title"] == "original"
+    for query in ("bad", "0", "", "999"):
+        status, _ = _get(_base(srv) + "/api/messages?group=" + query, headers)
+        assert status == 400
 
 
 def test_get_page_no_token_needed(server):
