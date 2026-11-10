@@ -63,7 +63,7 @@ def test_settings_dpapi_and_public_secrets(home, dav):
 def test_backup_restore_roundtrip(configured, home):
     a, b, attachment = seed(home)
     original = attachment.read_bytes()
-    job = finish(configured, "backup")
+    job = finish(configured, "backup", with_files=True)
     assert job["state"] == "done", job
     assert configured.status()["last_backup"]["name"] == job["name"]
     db.Chat().send(a, "备份之后的消息", to=["B"])
@@ -158,7 +158,9 @@ def test_wrong_password_can_retry(configured, home):
     assert failed["state"] == "failed" and failed["needs_password"]
     assert configured.read_only is False and called == []
     assert not list(home.glob("restore-saved-*"))
-    assert finish(configured, "restore", name=name, backup_password="备份密钥")["state"] == "done"
+    restored = finish(configured, "restore", name=name, backup_password="备份密钥")
+    assert restored["state"] == "done"
+    assert "0 个附件" in restored["message"]  # 默认不带附件（seed 里有一个附件）
     assert configured.read_only and called == [True]
 
 

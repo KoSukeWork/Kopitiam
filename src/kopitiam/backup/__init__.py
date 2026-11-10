@@ -330,7 +330,7 @@ class BackupManager:
         finally:
             self._lock.release()
 
-    def start(self, kind: str, *, with_files=True, name=None, backup_password=None) -> dict:
+    def start(self, kind: str, *, with_files=False, name=None, backup_password=None) -> dict:
         if kind not in ("backup", "restore"):
             raise ValueError("不认识这项备份操作")
         if kind == "restore":

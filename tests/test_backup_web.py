@@ -242,3 +242,10 @@ def test_posts_remain_concurrent_until_gate_closes(server, monkeypatch):
         slow.join(10)
         quick.join(10)
     server[0].write_gate.close_and_wait(timeout=.01)
+
+
+def test_backup_run_excludes_files_by_default(server, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(server[0].backup, "start", lambda kind, **kw: seen.update(kind=kind, **kw) or {"state": "running"})
+    assert post(server, "/api/backup/run")[1]["ok"]
+    assert seen == {"kind": "backup", "with_files": False}

@@ -307,7 +307,7 @@ class _Handler(BaseHTTPRequestHandler):
             if path == "/api/backup/run":
                 if manager.read_only:
                     return self._json({"ok": False, "message": backup.READ_ONLY}, 503)
-                return self._json({"ok": True, "job": manager.start("backup", with_files=data.get("files", True))})
+                return self._json({"ok": True, "job": manager.start("backup", with_files=data.get("files", False))})
             if path == "/api/backup/restore":
                 return self._json({"ok": True, "job": manager.start("restore", name=data.get("name"),
                                                                   backup_password=data.get("backup_password"))})
@@ -1422,7 +1422,7 @@ async function openBackup() {
     finally { test.disabled = false; }
   };
   const runSection = tsec("立即备份", "加密后上传到你的云盘；每台电脑保留最近 10 份。"), check = el("input");
-  check.type = "checkbox"; check.checked = true;
+  check.type = "checkbox"; check.checked = false;  // 附件可能很大，默认只备份聊天记录
   const size = el("span"), label = el("label", "backup-check"); label.append(check, size);
   const run = el("button", "bigbtn", "加密并备份"), progress = el("progress", "backup-progress"), status = el("div", "backup-status");
   progress.max = 100; progress.value = 0; status.setAttribute("role", "status");
