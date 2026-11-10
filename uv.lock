@@ -278,6 +278,7 @@ name = "kopitiam"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "mcp" },
     { name = "psutil" },
 ]
@@ -289,6 +290,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=50.0.2" },
     { name = "mcp", specifier = "<2" },
     { name = "psutil", specifier = ">=7.2.2" },
 ]
