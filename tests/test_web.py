@@ -123,6 +123,28 @@ def test_group_web_validation_is_atomic(server, home):
         assert status == 400
 
 
+def test_group_timeline_batches_only_consecutive_invites():
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is needed to exercise the inline timeline function")
+    function = "function timelineItems(" + web.INDEX_HTML.split("function timelineItems(", 1)[1].split("async function loadGroupHistory", 1)[0]
+    def event(i, second, actor="user", kind="added"):
+        return {"id": i, "time": "2026-11-10T11:" + second, "actor": actor, "kind": kind, "agent": f"agent-{i}"}
+    events = [event(1, "09:00", kind="created"), event(2, "09:01"), event(3, "09:02"),
+              event(4, "09:04"), event(5, "09:05", "frontend"), event(6, "10:00", "frontend"),
+              event(7, "10:01", None), event(8, "10:02", None)]
+    messages = [{"id": 1, "time": "2026-11-10T11:09:03"}]
+    script = function + "\nconsole.log(JSON.stringify(timelineItems(" + json.dumps(messages) + "," + json.dumps(events) + ")));"
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True)
+    items = json.loads(result.stdout)
+    assert len(items) == 8
+    assert items[1]["data"]["agents"] == ["agent-2", "agent-3"]
+    assert items[2]["event"] is False  # 中间有消息，之后的加入不能并到前面。
+    assert [x["data"].get("agents") for x in items[3:]] == [[f"agent-{i}"] for i in range(4, 9)]
+
+
 def test_get_page_no_token_needed(server):
     srv, token, url = server
     code, body = _get(_base(srv) + "/")

@@ -1364,11 +1364,32 @@ function selectGroup(id) {
 
 function groupEvent(e) {
   const actor = e.actor ? shown(e.actor) : "已删除的成员", agent = e.agent || "已删除的成员";
-  const text = {created:actor + " 创建了群聊", added:actor + " 把 " + agent + " 拉进了群聊",
+  const text = {created:actor + " 创建了群聊", added:actor + " 把 " + (e.agents || [agent]).join("、") + " 拉进了群聊",
     removed:actor + " 将 " + agent + " 移出了群聊", renamed:actor + " 将群聊改名为「" + e.detail + "」",
     updated:actor + " 更新了群聊说明", archived:actor + " 归档了群聊", restored:actor + " 恢复了群聊"}[e.kind] || "群聊已更新";
   const node = el("div", "group-event", text);
   node.append(el("time", "", fmtTime(e.time))); return node;
+}
+
+function timelineItems(messages, events) {
+  const items = [...messages.map(m => ({time:m.time, id:m.id, data:m, event:false})),
+    ...events.map(e => ({time:e.time, id:e.id, data:{...e}, event:true}))];
+  // NOTE: 数据库时间精确到秒；同一秒内的事件排在消息前，保证排序稳定。
+  items.sort((a, b) => a.time.localeCompare(b.time) || Number(b.event) - Number(a.event) || a.id - b.id);
+  const result = [];
+  for (const item of items) {
+    const previous = result.at(-1);
+    if (item.event && item.data.kind === "added") {
+      const name = item.data.agent || "已删除的成员";
+      if (previous?.event && previous.data.kind === "added" && item.data.actor && item.data.actor === previous.data.actor
+          && item.time.slice(0, 16) === previous.time.slice(0, 16)) {
+        previous.data.agents.push(name); continue;
+      }
+      item.data.agents = [name];
+    }
+    result.push(item);
+  }
+  return result;
 }
 
 async function loadGroupHistory(id, force = false) {
@@ -1382,11 +1403,8 @@ async function loadGroupHistory(id, force = false) {
     if (selectedGroup !== id || seq !== groupHistorySeq) return;
     if (!out.messages) { groupHistoryKey = ""; return; }
     const stream = $("stream"), bottom = force || stream.scrollTop + stream.clientHeight >= stream.scrollHeight - 40;
-    const items = [...out.messages.map(m => ({time:m.time, id:m.id, node:messageNode(m), event:false})),
-      ...(out.events || []).map(e => ({time:e.time, id:e.id, node:groupEvent(e), event:true}))];
-    // NOTE: 数据库时间精确到秒；同一秒内的事件排在消息前，保证排序稳定。
-    items.sort((a, b) => a.time.localeCompare(b.time) || Number(b.event) - Number(a.event) || a.id - b.id);
-    $("groupList").replaceChildren(...items.map(x => x.node));
+    const items = timelineItems(out.messages, out.events || []);
+    $("groupList").replaceChildren(...items.map(x => x.event ? groupEvent(x.data) : messageNode(x.data)));
     updateEmpty(); if (bottom) stream.scrollTop = stream.scrollHeight;
     loadedGroups[id] = out.messages.at(-1)?.id || 0;
     markGroupSeen(id, loadedGroups[id]);
