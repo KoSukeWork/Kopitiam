@@ -128,8 +128,13 @@ def test_restore_waits_for_existing_web_write(server, monkeypatch):
     assert post(server, "/api/backup/run")[1]["ok"]
     srv.backup._thread.join(20)
     name = srv.backup.status()["job"]["name"]
-    entered, release, applied = threading.Event(), threading.Event(), threading.Event()
+    entered, release, applied, pausing = (threading.Event() for _ in range(4))
     original_post, original_apply = web._Handler._post, backup._apply_restore
+    original_pause = srv.backup.on_restore
+    def pause():
+        pausing.set()
+        original_pause()
+    srv.backup.on_restore = pause
     def blocked(handler):
         entered.set()
         assert release.wait(10)
@@ -144,9 +149,10 @@ def test_restore_waits_for_existing_web_write(server, monkeypatch):
     assert entered.wait(5)
     try:
         assert post(server, "/api/backup/restore", {"name":name})[1]["ok"]
-        time.sleep(.2)
+        assert pausing.wait(5)
         assert not applied.is_set()
         assert get(server, "/api/backup")[1]["job"]["state"] == "running"
+        assert post(server, "/api/send", {"text":"关闸后拒绝"})[0] == 503
     finally:
         release.set()
         writer.join(10)
@@ -177,3 +183,62 @@ def test_wake_pause_drains_current_round(monkeypatch):
         waiter.join(5)
     assert paused.is_set() and not wake._thread.is_alive()
     assert db.get_meta("test-round") == "finished"
+
+
+def test_blocked_download_does_not_block_state_or_posts(server, monkeypatch):
+    srv, token, _ = server
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    outcomes = []
+    def slow_file(handler, name):
+        entered.set()
+        assert release.wait(10)
+        handler._send_bytes(b"attachment", "application/octet-stream")
+    monkeypatch.setattr(web._Handler, "_serve_file", slow_file)
+    download = threading.Thread(target=lambda: _get(_base(srv) + "/files/test.txt?t=" + token))
+    download.start()
+    assert entered.wait(5)
+    def other_requests():
+        outcomes.append(get(server, "/api/state")[0])
+        outcomes.append(post(server, "/api/send", {"text":"下载时仍能发消息"})[0])
+        finished.set()
+    other = threading.Thread(target=other_requests)
+    other.start()
+    try:
+        assert finished.wait(3), "下载不应让状态轮询或发送排队"
+        assert outcomes == [200, 200]
+    finally:
+        release.set()
+        download.join(10)
+        other.join(10)
+
+
+def test_posts_remain_concurrent_until_gate_closes(server, monkeypatch):
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    original = web._Handler._post
+    def slow_post(handler):
+        if handler.path == "/api/forget":
+            entered.set()
+            assert release.wait(10)
+            return handler._json({"ok":True})
+        return original(handler)
+    monkeypatch.setattr(web._Handler, "_post", slow_post)
+    slow = threading.Thread(target=lambda: post(server, "/api/forget"))
+    slow.start()
+    assert entered.wait(5)
+    outcomes = []
+    def quick_post():
+        outcomes.append(post(server, "/api/send", {"text":"并发写请求"})[0])
+        finished.set()
+    quick = threading.Thread(target=quick_post)
+    quick.start()
+    try:
+        assert finished.wait(3), "POST 之间不应互相串行"
+        assert outcomes == [200]
+        with pytest.raises(ValueError, match="已有写入"):
+            server[0].write_gate.close_and_wait(timeout=.01)
+        assert post(server, "/api/send", {"text":"关闸后"})[0] == 503
+    finally:
+        release.set()
+        slow.join(10)
+        quick.join(10)
+    server[0].write_gate.close_and_wait(timeout=.01)

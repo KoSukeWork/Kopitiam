@@ -423,6 +423,8 @@ class _PeerHandler(BaseHTTPRequestHandler):
         return peer
 
     def do_GET(self) -> None:
+        if self.service.read_only:
+            return self._err(503, "正在恢复 / 已恢复，请重开 kopitiam web")
         with self.service.request_lock:
             if self.service.read_only:
                 return self._err(503, "正在恢复 / 已恢复，请重开 kopitiam web")
@@ -434,6 +436,8 @@ class _PeerHandler(BaseHTTPRequestHandler):
         self._err(404, "not found")
 
     def do_POST(self) -> None:
+        if self.service.read_only:
+            return self._err(503, "正在恢复 / 已恢复，请重开 kopitiam web")
         with self.service.request_lock:
             if self.service.read_only:
                 return self._err(503, "正在恢复 / 已恢复，请重开 kopitiam web")

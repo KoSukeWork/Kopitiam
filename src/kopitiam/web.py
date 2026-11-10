@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import webbrowser
+from contextlib import contextmanager
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -33,6 +34,37 @@ RUNNABLE = {".exe", ".com", ".scr", ".pif", ".cpl", ".msi", ".msp", ".bat", ".cm
 SEND_BODY_MAX = 1024 * 1024
 
 
+class _WriteClosed(Exception):
+    pass
+
+
+class WriteGate:
+    """平时允许并发写请求；恢复关闸后拒绝新请求，等待已有请求退出。"""
+    def __init__(self):
+        self._condition = threading.Condition()
+        self._active = 0
+        self.closed = False
+
+    @contextmanager
+    def enter(self):
+        with self._condition:
+            if self.closed:
+                raise _WriteClosed
+            self._active += 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._active -= 1
+                self._condition.notify_all()
+
+    def close_and_wait(self, timeout=30):
+        with self._condition:
+            self.closed = True
+            if not self._condition.wait_for(lambda: self._active == 0, timeout=timeout):
+                raise ValueError("网页还在结束已有写入，请稍后重试恢复")
+
+
 class _WebServer(ThreadingHTTPServer):
     peer_service: peer.PeerService | None = None
     wake_service: WakeService | None = None
@@ -46,8 +78,7 @@ class _WebServer(ThreadingHTTPServer):
             self.wake_service.pause_for_restore()
         if self.peer_service:
             self.peer_service.pause_for_restore()
-        with self.request_lock:
-            pass
+        self.write_gate.close_and_wait()
 
     def server_close(self) -> None:  # 网页关掉时，团队端口、后台投递线程、自动唤醒一起停
         super().server_close()
@@ -113,8 +144,8 @@ def make_server(port: int = WEB_PORT, *, peer_host: str = "0.0.0.0", peer_port: 
         owner = _port_owner(port)
         raise SystemExit(f"错误：端口 {port} 被占用（{owner or e}）。换一个端口：kopitiam web --port {port + 10}")
     srv.peer_service = service
-    srv.request_lock = threading.RLock()
-    srv.backup = backup.BackupManager(on_restore=srv.pause_for_restore, write_guard=lambda: srv.request_lock)
+    srv.write_gate = WriteGate()
+    srv.backup = backup.BackupManager(on_restore=srv.pause_for_restore)
     if share if share is not None else db.get_meta("share") == "1":
         try:
             service.start_sharing()
@@ -193,8 +224,7 @@ class _Handler(BaseHTTPRequestHandler):
                                   else self.server.backup.list())
             except (ValueError, OSError) as e:
                 return self._json({"ok": False, "message": str(e)}, 400)
-        with self.server.request_lock:
-            return self._get()
+        return self._get()
 
     def _get(self) -> None:
         if not self._host_ok():
@@ -253,10 +283,13 @@ class _Handler(BaseHTTPRequestHandler):
             return self._backup_post()
         if self.server.backup.read_only:
             return self._json({"ok": False, "message": backup.READ_ONLY}, 503)
-        with self.server.request_lock:
-            if self.server.backup.read_only:
-                return self._json({"ok": False, "message": backup.READ_ONLY}, 503)
-            return self._post()
+        try:
+            with self.server.write_gate.enter():
+                if self.server.backup.read_only:
+                    return self._json({"ok": False, "message": backup.READ_ONLY}, 503)
+                return self._post()
+        except _WriteClosed:
+            return self._json({"ok": False, "message": backup.READ_ONLY}, 503)
 
     def _backup_post(self) -> None:
         data = self._read_json()
