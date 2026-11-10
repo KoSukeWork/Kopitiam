@@ -266,6 +266,11 @@ def export_context(kind: str, cwd: str, agent_name: str, mode: str = "clean",
             raise ExportError(f"判断不出 {path.name} 是哪种 agent 的记录（当前类型 {kind}）")
     else:
         parser = PARSERS.get(kind)
+        if kind == "nextchat":
+            raise ExportError(
+                "NextChat 的对话存在它自己的数据库里（桌面版是 WebView2 的 IndexedDB），kopitiam 读不到，导不出来。"
+                "交接时把目标、进度、下一步直接写进 send 的 text（最多 4000 字）；有写文件的工具的话，也可以写成文件用 files 发送。"
+            )
         if parser is None:
             raise ExportError(f"未知 agent 类型：{kind}。请用 session_file 直接指定记录文件。")
         path = parser.find_session(cwd)

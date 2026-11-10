@@ -210,6 +210,10 @@ def start(kind: str, name: str | None = None) -> int | None:
     一个对话一个身份时（见 _per_thread）这里还不认领，返回 None；Codex 桌面版、dsh 先把以前的对话身份接上（db.adopt）。
     """
     global _KIND, _NAME, _HOST, _HOST_TAG, _ME, _THREAD
+    if kind == "nextchat" and name is None:
+        # NextChat 的 MCP 进程在 NextChat 自己的启动目录里运行，这个目录跟着启动方式变（开始菜单、开发模式……），
+        # 按目录取名每次可能都不一样。它也不告诉我们是哪个对话，所以所有对话共用一个固定的名字。
+        name = "nextchat"
     db.init_db()
     try:
         db.purge_stale()  # 顺手清理很久不用、又没有消息的旧身份；失败不影响启动

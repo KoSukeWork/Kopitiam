@@ -6,7 +6,7 @@ import sys
 
 from .config import PEER_PORT, WEB_PORT
 
-KINDS = ["claude", "codex", "pi", "dsh", "agent"]
+KINDS = ["claude", "codex", "pi", "dsh", "nextchat", "agent"]
 
 
 def build_parser() -> argparse.ArgumentParser:

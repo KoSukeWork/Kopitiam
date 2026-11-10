@@ -15,6 +15,8 @@ from .detector import WakeCall
 # 可选 hint(agent) -> 能叫醒但有限制时的说明（给网页显示）；可选 remind() -> 定时调用（Codex 用来弹通知）；
 # 可选 typed() -> 每轮感知之前，把接收端记下的「用户在 agent 窗口里打了字」交给感知模块（pi、dsh）
 ADAPTERS = {"claude": claude, "codex": codex, "dsh": dsh, "pi": pi}
+# 不打算做自动唤醒的 agent：网页上直接写明怎么让它读消息
+UNSUPPORTED = {"nextchat": "NextChat 不能自动唤醒：在它的对话里说「看一下聊天室」，它才会去读"}
 HEARTBEAT = 10  # 每隔几秒在库里记一次「自动唤醒在运行」，网页据此提示有没有在跑
 CLEANUP = 600   # 每隔几秒清理一次关掉的 agent 留下的信号文件
 REMIND = 2      # 每隔几秒调一次适配器的 remind()（只看几个小文件，很便宜）
@@ -23,7 +25,7 @@ REMIND = 2      # 每隔几秒调一次适配器的 remind()（只看几个小�
 def check(agent: dict) -> str | None:
     mod = ADAPTERS.get(agent["kind"])
     if mod is None:
-        return f"{agent['kind']} 还不支持自动唤醒"
+        return UNSUPPORTED.get(agent["kind"]) or f"{agent['kind']} 还不支持自动唤醒"
     return mod.check(agent)
 
 
