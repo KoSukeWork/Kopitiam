@@ -15,6 +15,14 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture
+def dav(home):
+    from fake_webdav import FakeDAV
+    server = FakeDAV(home / "fake-dav")
+    yield server
+    server.close()
+
+
 @pytest.fixture(autouse=True)
 def toasts(monkeypatch):
     """测试绝不弹真的 Windows 通知、不改注册表：记下来给测试检查。"""
