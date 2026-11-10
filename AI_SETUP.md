@@ -32,13 +32,14 @@ uv --version
 git --version
 uv tool list | Select-String kopitiam
 Get-Command claude, codex, pi, dsh -ErrorAction SilentlyContinue | Select-Object Name, Source
-Test-Path "$HOME\.codex", "$HOME\.pi\agent", "$HOME\.dsh\profiles"
+Test-Path "$HOME\.codex", "$HOME\.pi\agent", "$HOME\.dsh\profiles", "$env:APPDATA\com.yida.chatgpt.next.web"
 # kopitiam web 是不是已经开着
 Get-CimInstance Win32_Process -Filter "Name='kopitiam.exe'" | Where-Object { $_.CommandLine -match '\sweb(\s|$)' } | Select-Object ProcessId, CommandLine
 ```
 
 - Codex 桌面版可能没有 `codex` 命令，但有 `~\.codex` 目录，也算装了 Codex。
 - dsh 的配置按 profile 分：`~\.dsh\profiles\` 下**有 `cordis.yml` 的**文件夹才是 profile，一般是 `web`（网页版）和 `desktop`（桌面版）。`node_modules` 这类文件夹不是。
+- NextChat 不是命令行程序，查不到命令。桌面版有 `%APPDATA%\com.yida.chatgpt.next.web` 目录就算装了。服务器版（自己部署的网页）要问用户：MCP 进程在服务器那台机器上运行，**只有服务器就在这台电脑上才能接**。
 
 再看哪些已经接好了。**只读文件，不要运行会启动 kopitiam 的命令**：
 
@@ -48,6 +49,7 @@ Get-CimInstance Win32_Process -Filter "Name='kopitiam.exe'" | Where-Object { $_.
 | Codex | `~\.codex\config.toml` 里有 `[mcp_servers.kopitiam]` | `~\.codex\hooks.json` 里有 `codex-stop` |
 | pi | `~\.pi\agent\mcp.json` 里有 `"kopitiam"` | 有 `~\.pi\agent\extensions\kopitiam-wake.ts` |
 | dsh（每个 profile） | `cordis.patch.yml` 里有 `serverName: kopitiam` | 同一个文件里有 `id: kopitiam-wake` |
+| NextChat | `mcp_config.json` 里有 `"kopitiam"`。桌面版在 `%APPDATA%\com.yida.chatgpt.next.web\`；服务器版在 NextChat 目录的 `app\mcp\`；设了 `NEXTCHAT_MCP_CONFIG_DIR` 就在那个目录 | 不支持，不用装 |
 
 然后**一次问清楚**，问的时候先说现状，比如：「Claude Code、Codex 已经接好了，pi 还没接」：
 1. 还没接好的 agent 要接哪几个（默认全接）。dsh 要接哪个 profile。
@@ -157,9 +159,31 @@ pi mcp add kopitiam --exposure direct -- "<KOPITIAM>" mcp --kind pi
 
 **检查**：运行 `dsh --profile <profile> --dump-config 2>&1 | Select-String 'not found|serverName'`。结果里有 `serverName: kopitiam`，并且没有 `not found`。
 
+### NextChat
+
+**不要自己改 `mcp_config.json`**：NextChat 添加 MCP 时会弹窗让用户确认要运行的命令，直接改文件会跳过这一步。把下面这段（`<KOPITIAM>` 换成真实路径，JSON 里的反斜杠要写两个）交给用户，请他在 NextChat 的 MCP 页面点「粘贴 JSON 添加」，粘贴进去，在弹窗里点「允许」：
+
+```json
+{
+  "mcpServers": {
+    "kopitiam": {
+      "command": "<KOPITIAM>",
+      "args": ["mcp", "--kind", "nextchat"]
+    }
+  }
+}
+```
+
+先告诉用户这几点：
+- 所有对话共用一个身份 `nextchat`；
+- 叫不醒，要在对话里说「看一下聊天室」它才会去读；
+- `export_context` 用不了。
+
+**检查**：重新读一遍 `mcp_config.json`，`kopitiam` 这一项的 `command`、`args` 和上面一样。NextChat 的 MCP 页面里 kopitiam 显示「运行中」。
+
 ## 第 4 步：装自动唤醒
 
-用第 2 步的 `<KOPITIAM>` 运行，只装用户选了、还没装的。已经装过的再运行一次也安全：不会加出重复的条目，插件有新版本就换上。想先看会改什么，加 `--print`。
+用第 2 步的 `<KOPITIAM>` 运行，只装用户选了、还没装的。已经装过的再运行一次也安全：不会加出重复的条目，插件有新版本就换上。想先看会改什么，加 `--print`。NextChat 没有自动唤醒，跳过。
 
 | agent | 命令 | 它会改什么（自己备份成） | 之后要做的 |
 |---|---|---|---|
@@ -232,13 +256,13 @@ kopitiam 的 MCP 自带使用说明，不加也会用。用户想加的话，把
 
 1. **改了哪些文件、你的备份在哪**（逐个列出）。`setup codex` 还写了注册表（见第 4 步）。
 2. **要重开哪些程序**：
-   - 第 3、4 步动过的 agent 都要重开，包括你自己。
+   - 第 3、4 步动过的 agent 都要重开，包括你自己。NextChat 不用重开：在网页上添加以后马上就连上了。
    - Codex 命令行：关掉所有窗口以后，运行 `codex app-server daemon stop`。daemon 会在后台留很久，下次开窗口时会自动启动新的。
    - `kopitiam web`：第 2 步升级过，或者 editable 的源码比它新，要重开。
 3. **重开以后怎么验证**：
    1. 在每个 agent 里说「调用 kopitiam 的 whoami」，它会回答「你是 claude@…」这样的名字。Codex、dsh 每个对话（会话）都要先这样用一次，才会出现在网页的成员列表里，也才叫得醒。
    2. 网页左栏能看到它们，显示在线。
-   3. 在网页上点一个 agent，给它发「收到请回复」：它应该几秒内自己醒过来回复，不用你去它的窗口里说话。
+   3. 在网页上点一个 agent，给它发「收到请回复」：它应该几秒内自己醒过来回复，不用你去它的窗口里说话。NextChat 叫不醒：发给 `nextchat` 以后，在它的对话里说「看一下聊天室」，它读到以后再回复。
    4. Codex 命令行第一次调用 kopitiam 时会问「Allow the kopitiam MCP server to run tool …?」，选「Always allow」。不然被叫醒时也会停在这里等人点。
 
 ## 常见问题
@@ -273,5 +297,6 @@ uv tool upgrade kopitiam
    - `pi mcp remove kopitiam`
    - 删掉 `~\.codex\config.toml` 里的 `[mcp_servers.kopitiam]` 一段
    - 删掉 dsh `cordis.patch.yml` 里 kopitiam 的 `- insert:` 一段
+   - NextChat：请用户在 MCP 页面里把 kopitiam「移除」
 3. 关掉所有用 kopitiam 的程序，然后运行 `uv tool uninstall kopitiam`。
 4. 聊天记录和附件在 `~\.kopitiam`，用户确认以后再删。
