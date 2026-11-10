@@ -1153,8 +1153,8 @@ main.page > #groupHeader { display:none; }
         <button id="pick" class="iconbtn" title="添加附件" aria-label="添加附件"><span data-icon="clip"></span></button>
         <span id="chiprow"></span>
         <span class="spacer"></span>
-        <span class="hint">Ctrl+Enter 发送</span>
-        <button id="send" title="发送（Ctrl+Enter）" aria-label="发送" disabled><span data-icon="send"></span></button>
+        <span class="hint">Enter 发送 · Ctrl+Enter 换行</span>
+        <button id="send" title="发送（Enter）" aria-label="发送" disabled><span data-icon="send"></span></button>
       </div>
     </div>
   </div>
@@ -1736,8 +1736,8 @@ function updateMentions() {
   if (!match) { hideMentions(); return; }
   mentionStart = before.length - match[1].length - 1; mentionEnd = input.selectionStart;
   const g = groupsById[selectedGroup], query = match[1].toLowerCase();
-  mentionChoices = [...groupCandidates(g), {name:"user", kind:"human", online:true}]
-    .filter(a => a.name.toLowerCase().startsWith(query));
+  // 网页是以 user 发言的：@ 自己会被忽略，整条就变成发给全体（还会叫醒所有成员），所以候选里不放 user
+  mentionChoices = groupCandidates(g).filter(a => a.name !== "user" && a.name.toLowerCase().startsWith(query));
   if (!mentionChoices.length) { hideMentions(); return; }
   mentionIndex = 0; renderMentions();
 }
@@ -2609,9 +2609,17 @@ $("groupOptions").onclick = () => openGroupEditor(groupsById[selectedGroup]);
 $("showAll").onclick = () => select(null);
 $("text").addEventListener("input", () => { updateSend(); autosize(); updateMentions(); });
 $("text").addEventListener("click", updateMentions);
+function insertNewline() {
+  const t = $("text");
+  // execCommand 保留撤销记录（Ctrl+Z 能撤回这个换行）；不支持时退回 setRangeText，再手动触发 input
+  if (!document.execCommand("insertText", false, "\\n")) {
+    t.setRangeText("\\n", t.selectionStart, t.selectionEnd, "end");
+    t.dispatchEvent(new Event("input"));
+  }
+}
 $("text").addEventListener("keydown", (e) => {
-  if (e.isComposing) return;
-  if (!$("mentions").hidden && !e.ctrlKey) {
+  if (e.isComposing || e.keyCode === 229) return;  // 输入法正在选字：这时的回车是确认候选词，不是发送
+  if (!$("mentions").hidden && !e.ctrlKey && !e.metaKey) {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault(); mentionIndex = (mentionIndex + (e.key === "ArrowDown" ? 1 : -1) + mentionChoices.length) % mentionChoices.length;
       renderMentions(); return;
@@ -2619,7 +2627,9 @@ $("text").addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); insertMention(mentionChoices[mentionIndex].name); return; }
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); hideMentions(); return; }
   }
-  if (e.key === "Enter" && e.ctrlKey) { e.preventDefault(); send(); }
+  if (e.key !== "Enter" || e.altKey) return;
+  if (e.ctrlKey || e.metaKey) { e.preventDefault(); insertNewline(); return; }  // Ctrl+Enter 换行
+  if (!e.shiftKey) { e.preventDefault(); send(); }  // Enter 发送；Shift+Enter 照浏览器默认换行
 });
 document.addEventListener("click", e => { if (e.target !== $("text") && !$("mentions").contains(e.target)) hideMentions(); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden && selectedGroup) loadGroupHistory(selectedGroup); });

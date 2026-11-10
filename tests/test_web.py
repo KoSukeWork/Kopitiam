@@ -145,6 +145,64 @@ def test_group_timeline_batches_only_consecutive_invites():
     assert [x["data"].get("agents") for x in items[3:]] == [[f"agent-{i}"] for i in range(4, 9)]
 
 
+def _run_js(script: str):
+    """在 node 里跑一段从 INDEX_HTML 切出来的页面代码（加上桩），返回它打印的 JSON。"""
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is needed to exercise inline page functions")
+    return json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout)
+
+
+def test_composer_enter_sends_and_ctrl_enter_adds_newline():
+    start = '$("text").addEventListener("keydown", '
+    handler = start + web.INDEX_HTML.split(start, 1)[1].split("\n});", 1)[0] + "\n});"
+    stubs = """
+let handler, calls = [], mentionChoices = [{name: "codex@web"}], mentionIndex = 0;
+const els = {mentions: {hidden: true}, text: {addEventListener: (type, fn) => { handler = fn; }}};
+const $ = (id) => els[id];
+const send = () => calls.push("send"), insertNewline = () => calls.push("newline");
+const insertMention = (name) => calls.push("mention:" + name), renderMentions = () => {}, hideMentions = () => {};
+"""
+    probe = """
+function press(opts, mentionsOpen = false) {
+  calls = []; els.mentions.hidden = !mentionsOpen;
+  const e = {key: "Enter", keyCode: 13, isComposing: false, ctrlKey: false, metaKey: false, shiftKey: false,
+             altKey: false, prevented: false, preventDefault() { this.prevented = true; }, stopPropagation() {}, ...opts};
+  handler(e);
+  return [calls.join(","), e.prevented];
+}
+console.log(JSON.stringify({
+  enter: press({}), ctrl: press({ctrlKey: true}), shift: press({shiftKey: true}),
+  ime: press({isComposing: true}), ime229: press({keyCode: 229}),
+  pick: press({}, true), pickCtrl: press({ctrlKey: true}, true), other: press({key: "a"}),
+}));
+"""
+    r = _run_js(stubs + handler + probe)
+    assert r["enter"] == ["send", True]
+    assert r["ctrl"] == ["newline", True]
+    assert r["shift"] == ["", False]  # Shift+Enter 交给浏览器默认换行
+    assert r["ime"] == ["", False] and r["ime229"] == ["", False]  # 输入法选字时的回车不发送
+    assert r["pick"] == ["mention:codex@web", True]  # @ 候选打开时，回车是插入候选
+    assert r["pickCtrl"] == ["newline", True]
+    assert r["other"] == ["", False]
+
+
+def test_web_mention_picker_leaves_out_user():
+    # 网页以 user 发言：@ 自己会被忽略，整条变成发给全体，所以候选里不能有 user
+    fn = "function updateMentions(" + web.INDEX_HTML.split("function updateMentions(", 1)[1].split("\n}", 1)[0] + "\n}"
+    stubs = """
+let mentionChoices = [], mentionIndex = 0, mentionStart = 0, mentionEnd = 0;
+const selectedGroup = 3, groupsById = {3: {}};
+const els = {text: {value: "hi @u", selectionStart: 5, disabled: false}};
+const $ = (id) => els[id];
+const groupCandidates = () => [{name: "user"}, {name: "ux-bot"}, {name: "codex@web"}];
+const hideMentions = () => {}, renderMentions = () => {};
+"""
+    assert _run_js(stubs + fn + "\nupdateMentions(); console.log(JSON.stringify(mentionChoices.map(a => a.name)));") == ["ux-bot"]
+
+
 def test_get_page_no_token_needed(server):
     srv, token, url = server
     code, body = _get(_base(srv) + "/")
