@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -38,7 +39,7 @@ from .config import (
     valid_name,
 )
 
-SCHEMA_VERSION = "10"  # 2：团队（peers / outbox / messages.remote_uid）；3：自动唤醒（wake_state）；4：agents.thread_id；5：wake_state.woken_pid；6：agents.host；7：agents.archived_at；8：agents.trashed_at；9：agents.title；10：wake_state.user_at
+SCHEMA_VERSION = "11"  # 11：群聊；10：wake_state.user_at
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -90,6 +91,28 @@ CREATE TABLE IF NOT EXISTS wake_state(
   woken_upto  INTEGER NOT NULL DEFAULT 0,
   woken_at    REAL,
   note        TEXT);
+CREATE TABLE IF NOT EXISTS groups(
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL,
+  about TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  archived_at TEXT);
+CREATE TABLE IF NOT EXISTS group_members(
+  group_id INTEGER NOT NULL REFERENCES groups(id),
+  agent_id INTEGER NOT NULL REFERENCES agents(id),
+  added_at TEXT NOT NULL,
+  added_by INTEGER REFERENCES agents(id),
+  intro_at TEXT,
+  PRIMARY KEY(group_id, agent_id));
+CREATE TABLE IF NOT EXISTS group_events(
+  id INTEGER PRIMARY KEY,
+  group_id INTEGER NOT NULL REFERENCES groups(id),
+  at TEXT NOT NULL,
+  actor_id INTEGER REFERENCES agents(id),
+  kind TEXT NOT NULL,
+  agent_id INTEGER REFERENCES agents(id),
+  detail TEXT);
+CREATE TABLE IF NOT EXISTS group_seen(group_id INTEGER PRIMARY KEY REFERENCES groups(id), upto INTEGER NOT NULL);
 """
 # peers：配对过的别人的电脑。name = 对方自报的名字；address = 对方团队端口 host:port；
 #   secret = 配对时生成的共享密钥（HMAC 签名用）；agent_id = 本机为这个人建的身份（kind='remote'）。
@@ -157,7 +180,9 @@ def init_db() -> None:
             for table, col, typ in (("messages", "remote_uid", "TEXT"), ("agents", "thread_id", "TEXT"),
                                     ("wake_state", "woken_pid", "INTEGER"), ("agents", "host", "TEXT"),
                                     ("agents", "archived_at", "TEXT"), ("agents", "trashed_at", "TEXT"),
-                                    ("agents", "title", "TEXT"), ("wake_state", "user_at", "REAL")):
+                                    ("agents", "title", "TEXT"), ("wake_state", "user_at", "REAL"),
+                                    ("messages", "group_id", "INTEGER"), ("messages", "to_all", "INTEGER"),
+                                    ("agents", "last_group", "INTEGER")):
                 if col not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
                     try:
                         c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
@@ -165,6 +190,7 @@ def init_db() -> None:
                         if "duplicate column" not in str(e):
                             raise
             c.execute("CREATE UNIQUE INDEX IF NOT EXISTS messages_remote_uid ON messages(remote_uid)")
+            c.execute("CREATE INDEX IF NOT EXISTS messages_group ON messages(group_id, id)")
             c.execute(
                 "INSERT INTO meta(key, value) VALUES('schema_version', ?)"
                 " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -323,7 +349,7 @@ def _drop_spare_names(c, name: str, keep: int) -> None:
         if not r["name"].lower().startswith(name.lower() + "-"):
             continue
         suffix = r["name"][len(name) + 1:]
-        if suffix.isdigit() and r["kind"] != "remote" and not counts.get(r["id"]) and not is_online(r):
+        if suffix.isdigit() and r["kind"] != "remote" and not counts.get(r["id"]) and not _has_group_links(c, r["id"]) and not is_online(r):
             c.execute("DELETE FROM agents WHERE id=?", (r["id"],))
 
 
@@ -489,7 +515,7 @@ def claim_thread(kind: str, thread_id: str, cwd: str, *, pid: int | None = None,
                 nm = base if i == 1 else f"{base}-{i}"
                 old = c.execute("SELECT * FROM agents WHERE name = ?", (nm,)).fetchone()
                 if old is not None and old["kind"] == kind and old["thread_id"] is None and not is_online(old):
-                    if counts.get(old["id"]):
+                    if counts.get(old["id"]) or _has_group_links(c, old["id"]):
                         c.execute(
                             "UPDATE agents SET thread_id=?, cwd=?, pid=?, pid_ctime=?, last_seen=?, host=?, archived_at=NULL,"
                             " trashed_at=NULL"
@@ -598,6 +624,21 @@ def _purge_at(trashed_at: str) -> str:
     return when.isoformat(timespec="seconds")
 
 
+def _has_group_links(c, agent_id: int) -> bool:
+    # NOTE: 没有消息但已经入群的身份也有历史，不按空闲的多余身份自动清理。
+    return bool(c.execute("SELECT 1 FROM group_members WHERE agent_id=? OR added_by=?", (agent_id, agent_id)).fetchone()
+                or c.execute("SELECT 1 FROM group_events WHERE agent_id=? OR actor_id=?", (agent_id, agent_id)).fetchone())
+
+
+def _delete_identity(c, agent_id: int) -> None:
+    c.execute("DELETE FROM group_members WHERE agent_id=?", (agent_id,))
+    c.execute("UPDATE group_members SET added_by=NULL WHERE added_by=?", (agent_id,))
+    # NOTE: 保留群事件的时间线，把永久删除的身份引用置空；网页显示为「已删除的成员」。
+    c.execute("UPDATE group_events SET actor_id=NULL WHERE actor_id=?", (agent_id,))
+    c.execute("UPDATE group_events SET agent_id=NULL WHERE agent_id=?", (agent_id,))
+    c.execute("DELETE FROM agents WHERE id=?", (agent_id,))
+
+
 def _delete_agent(c, agent_id: int) -> list[str]:
     """连同消息一起删掉一个身份（回收站到期、或者用户在回收站里点「永久删除」），返回要删的附件文件。
 
@@ -606,11 +647,13 @@ def _delete_agent(c, agent_id: int) -> list[str]:
     而且转发会和原消息共用同一个文件，还有别的消息在用的不删。
     """
     gone = [r[0] for r in c.execute("SELECT id FROM messages WHERE sender_id=?", (agent_id,))]
-    for r in c.execute("SELECT id, to_ids FROM messages WHERE to_ids <> '[]' AND sender_id <> ?",
+    for r in c.execute("SELECT id, to_ids, group_id FROM messages WHERE to_ids <> '[]' AND sender_id <> ?",
                        (agent_id,)).fetchall():  # 先读完再改，别边读边改同一张表
         targets = Chat._targets(r["to_ids"])
         if agent_id in targets:
             rest = [i for i in targets if i != agent_id]
+            if not rest and r["group_id"] is not None:
+                rest = [c.execute("SELECT id FROM agents WHERE name='user'").fetchone()[0]]
             if rest:
                 c.execute("UPDATE messages SET to_ids=? WHERE id=?", (json.dumps(rest), r["id"]))
             else:
@@ -621,7 +664,7 @@ def _delete_agent(c, agent_id: int) -> list[str]:
         c.execute("DELETE FROM attachments WHERE message_id=?", (mid,))
         c.execute("DELETE FROM outbox WHERE message_id=?", (mid,))
         c.execute("DELETE FROM messages WHERE id=?", (mid,))
-    c.execute("DELETE FROM agents WHERE id=?", (agent_id,))
+    _delete_identity(c, agent_id)
     return [p for p in set(paths)
             if c.execute("SELECT 1 FROM attachments WHERE path=?", (p,)).fetchone() is None]
 
@@ -653,7 +696,7 @@ def purge_stale() -> int:
                 "SELECT * FROM agents WHERE kind <> 'human' AND last_seen < ?", (cutoff,)
             ).fetchall()
             gone = [r["id"] for r in rows
-                    if not counts.get(r["id"]) and r["id"] not in paired and not is_online(r)]
+                    if not counts.get(r["id"]) and not _has_group_links(c, r["id"]) and r["id"] not in paired and not is_online(r)]
             for i in gone:
                 c.execute("DELETE FROM agents WHERE id=?", (i,))
             # 回收站到期：在线也删（还在用的话，它一调用工具就已经自己恢复了）
@@ -901,6 +944,59 @@ def _fmt_size(n: int) -> str:
     return f"{f'{n / 1024 / 1024:.1f}'.rstrip('0').rstrip('.')} MB"
 
 
+def parse_mentions(text: str, candidates, sender: int) -> list[int]:
+    """名字可以包含 @；只在名字外寻找起点，并优先匹配最长的名字。"""
+    names = sorted(candidates, key=lambda r: len(r["name"]), reverse=True)
+    found = []
+    for match in re.finditer(r"(?<![\w.@\-])@", text):
+        tail = text[match.end():].lower()
+        for row in names:
+            if tail.startswith(row["name"].lower()):
+                if row["id"] != sender and row["id"] not in found:
+                    found.append(row["id"])
+                break
+    return found
+
+
+def _group_member(c, group: int, me: int) -> bool:
+    return c.execute("SELECT 1 FROM group_members WHERE group_id=? AND agent_id=?", (group, me)).fetchone() is not None
+
+
+def _group_event(c, group: int, actor: int, kind: str, agent=None, detail=None) -> None:
+    c.execute("INSERT INTO group_events(group_id, at, actor_id, kind, agent_id, detail) VALUES(?, ?, ?, ?, ?, ?)",
+              (group, now_iso(), actor, kind, agent, detail))
+
+
+def _add_member(c, group: int, agent: int, actor: int) -> bool:
+    if _group_member(c, group, agent):
+        return False
+    c.execute("INSERT INTO group_members(group_id, agent_id, added_at, added_by) VALUES(?, ?, ?, ?)",
+              (group, agent, now_iso(), actor))
+    _group_event(c, group, actor, "added", agent)
+    return True
+
+
+def _my_groups(c, me: int):
+    return c.execute("SELECT g.*, (SELECT COUNT(*) + 1 FROM group_members WHERE group_id=g.id) AS size"
+                     " FROM groups g JOIN group_members m ON m.group_id=g.id"
+                     " WHERE m.agent_id=? AND g.archived_at IS NULL ORDER BY g.id", (me,)).fetchall()
+
+
+def _check_group(c, group: int, me: int, *, history=False):
+    g = c.execute("SELECT * FROM groups WHERE id=?", (group,)).fetchone()
+    if g is None:
+        mine = "、".join(f"{r['id']}「{r['title']}」" for r in _my_groups(c, me)) or "无"
+        raise _Fail(f"错误：没有群聊 {group}。你所在的群聊：{mine}")
+    human = c.execute("SELECT kind FROM agents WHERE id=?", (me,)).fetchone()[0] == "human"
+    former = history and c.execute("SELECT 1 FROM group_events WHERE group_id=? AND agent_id=?"
+                                   " AND kind='added'", (group, me)).fetchone()
+    if not human and not _group_member(c, group, me) and not former:
+        raise _Fail(f"错误：你不在群聊 {group} 里。")
+    if g["archived_at"] and not history:
+        raise _Fail(f"错误：群聊 {group}「{g['title']}」已归档，不能再发消息。")
+    return g
+
+
 class Chat:
     """全部业务逻辑；方法的第一个业务参数是 me（agent id）。"""
 
@@ -944,15 +1040,20 @@ class Chat:
                     "SELECT id, to_ids FROM messages WHERE id > ? AND sender_id <> ?",
                     (last_read, me),
                 ).fetchall()
+                groups = _my_groups(c, me)
                 c.execute("COMMIT")
             except BaseException:
                 c.execute("ROLLBACK")
                 raise
         unread = sum(1 for r in rows if self._visible(r["to_ids"], me))
-        return (
+        out = (
             f"你是 {me_row['name']}（{me_row['kind']}，工作目录 {me_row['cwd']}）。"
             f"未读消息 {unread} 条。"
         )
+        if groups:
+            out += f"\n你在 {len(groups)} 个群聊里：" + "、".join(
+                f"{g['id']}「{g['title']}」（{g['size']} 人）" for g in groups) + "。"
+        return out
 
     # ---- 6.2 who ----
 
@@ -986,7 +1087,7 @@ class Chat:
     # ---- 6.3 send ----
 
     def send(self, me: int, text: str, to: list[str] | None = None,
-             files: list[str] | None = None, *, orig_names: list[str] | None = None,
+             files: list[str] | None = None, group: int | None = None, *, orig_names: list[str] | None = None,
              text_max: int = TEXT_MAX) -> str:
         """orig_names / text_max 只给 forward 用：保留附件原名、正文多留出「转发自…」那一行。"""
         with _conn() as c:
@@ -996,12 +1097,42 @@ class Chat:
                 self._touch(c, me)
 
                 # 1. 解析收件人；有一个名字不存在就整个失败
+                if group is not None and to is not None:
+                    raise _Fail("错误：群聊里用 @名字 点名，不用 to。")
+                if group is None and to is None:
+                    groups = _my_groups(c, me)
+                    if me_row["last_group"] in {g["id"] for g in groups}:
+                        group = me_row["last_group"]
+                    elif len(groups) == 1:
+                        group = groups[0]["id"]
+                group_row = _check_group(c, group, me) if group is not None else None
                 to = to or []
                 to_ids: list[int] = []
+                added = []
+                to_all = None
                 remote_peers: list[int] = []  # 收件人里别人电脑上的人 → 进发件箱，由网页进程投递
                 archived: list[str] = []  # 收件人里已归档的（照常保存，只是不叫醒；告诉发送者一声）
                 broadcast = any(t.strip().lower() == "all" or t.strip() == "所有人" for t in to)
-                if not broadcast:
+                if group_row is not None:
+                    candidates = c.execute(
+                        "SELECT * FROM agents WHERE kind <> 'remote' AND (kind='human'"
+                        " OR id IN (SELECT agent_id FROM group_members WHERE group_id=?)"
+                        " OR (archived_at IS NULL AND trashed_at IS NULL)) ORDER BY id", (group,)).fetchall()
+                    to_ids = parse_mentions(text or "", candidates, me)
+                    to_all = int(not to_ids)
+                    for row in candidates:
+                        if row["id"] in to_ids and row["kind"] != "human":
+                            if _add_member(c, group, row["id"], me):
+                                added.append(row["name"])
+                    uid = c.execute("SELECT id FROM agents WHERE name='user'").fetchone()[0]
+                    if to_all:
+                        to_ids = [r[0] for r in c.execute("SELECT agent_id FROM group_members WHERE group_id=?"
+                                                         " AND agent_id<>? ORDER BY agent_id", (group, me))]
+                        if uid != me:
+                            to_ids.append(uid)
+                    if not to_ids:
+                        to_ids = [uid]  # 旧 MCP 用 [] 表示广播，群里永远不能写 []。
+                elif not broadcast:
                     for t in to:
                         t = t.strip()
                         if not t:
@@ -1058,8 +1189,8 @@ class Chat:
 
                 # 3. 写 message 行
                 cur = c.execute(
-                    "INSERT INTO messages(sender_id, to_ids, text, created_at) VALUES(?, ?, ?, ?)",
-                    (me, json.dumps(to_ids), text, now_iso()),
+                    "INSERT INTO messages(sender_id, to_ids, text, created_at, group_id, to_all) VALUES(?, ?, ?, ?, ?, ?)",
+                    (me, json.dumps(to_ids), text, now_iso(), group, to_all),
                 )
                 msg_id = int(cur.lastrowid)
 
@@ -1108,6 +1239,11 @@ class Chat:
 
         disp = "所有人" if (broadcast or not to_ids) else "、".join(names[i] for i in to_ids)
         out = f"已发送 #{msg_id} → {disp}"
+        if group_row is not None:
+            disp = "全体" if to_all else "、".join("@" + names[i] for i in to_ids)
+            out = f"已发送 #{msg_id} → 群聊 {group}「{group_row['title']}」· {disp}"
+            if added:
+                out += f"（已把 {'、'.join(added)} 拉进群聊）"
         if atts:
             out += f"（附件 {len(atts)} 个）"
         if remote_peers:
@@ -1157,8 +1293,27 @@ class Chat:
                 ).fetchall()
                 visible = [r for r in rows if self._visible(r["to_ids"], me)]
                 take = visible[:limit]
+                intros = []
                 if take:
-                    c.execute("UPDATE agents SET last_read=? WHERE id=?", (take[-1]["id"], me))
+                    c.execute("UPDATE agents SET last_read=?, last_group=? WHERE id=?",
+                              (take[-1]["id"], take[-1]["group_id"], me))
+                    for gid in dict.fromkeys(m["group_id"] for m in take if m["group_id"] is not None):
+                        member = c.execute("SELECT m.*, a.name AS actor, g.title, g.about FROM group_members m"
+                                           " JOIN groups g ON g.id=m.group_id LEFT JOIN agents a ON a.id=m.added_by"
+                                           " WHERE m.group_id=? AND m.agent_id=?", (gid, me)).fetchone()
+                        if member is None or member["intro_at"]:
+                            continue
+                        names = [r[0] for r in c.execute("SELECT a.name FROM group_members m JOIN agents a ON a.id=m.agent_id"
+                                                        " WHERE m.group_id=? AND a.id<>? ORDER BY a.id", (gid, me))]
+                        lines = [f"【群聊 {gid}「{member['title']}」】你在这个群里（{member['actor'] or '已删除的成员'}"
+                                 f" 在 {_fmt_time(member['added_at'])} 拉你进来的）。"]
+                        if member["about"]:
+                            lines.append(f"说明：{member['about']}")
+                        lines += ["成员：" + "、".join(["你", *names, "user（用户）"]),
+                                  f"群里只推 @ 你的和发给全体的消息；要看全部，用 history(group={gid})。"
+                                  f"回复用 send(group={gid})，用 @名字 点名。"]
+                        intros.append("\n".join(lines))
+                        c.execute("UPDATE group_members SET intro_at=? WHERE group_id=? AND agent_id=?", (now_iso(), gid, me))
                 c.execute("COMMIT")
             except BaseException:
                 c.execute("ROLLBACK")
@@ -1166,27 +1321,29 @@ class Chat:
         if not take:
             return "没有新消息。"
         remaining = len(visible) - len(take)
-        text = self._format(take)
+        text = "\n\n".join([*intros, self._format(take)])
         if remaining:
             text += f"\n（还有 {remaining} 条未读，再调用 read）"
         return text
 
     # ---- 6.5 history ----
 
-    def history(self, me: int, n: int = 20, with_agent: str | None = None) -> str:
+    def history(self, me: int, n: int = 20, with_agent: str | None = None, group: int | None = None) -> str:
         n = max(1, min(int(n), 100))
         with _conn() as c:
             c.execute("BEGIN IMMEDIATE")
             try:
                 self._me(c, me)
                 self._touch(c, me)
+                if group is not None:
+                    _check_group(c, group, me, history=True)
                 other_id: int | None = None
                 if with_agent is not None:
                     row = c.execute("SELECT id FROM agents WHERE name=?", (with_agent,)).fetchone()
                     if row is None:
                         raise _Fail(f'错误：找不到 "{with_agent}"。现有：{_all_names(c)}')
                     other_id = int(row["id"])
-                rows = c.execute("SELECT * FROM messages ORDER BY id ASC").fetchall()
+                rows = c.execute("SELECT * FROM messages WHERE group_id=? ORDER BY id ASC", (group,)).fetchall() if group is not None else c.execute("SELECT * FROM messages ORDER BY id ASC").fetchall()
                 c.execute("COMMIT")
             except _Fail as e:
                 c.execute("ROLLBACK")
@@ -1194,7 +1351,7 @@ class Chat:
             except BaseException:
                 c.execute("ROLLBACK")
                 raise
-        visible = [m for m in rows if self._between(m, me, other_id)]
+        visible = rows if group is not None else [m for m in rows if self._between(m, me, other_id)]
         take = visible[-n:]
         if not take:
             return "没有历史消息。"
@@ -1303,7 +1460,7 @@ class Chat:
                           (*[me_row[k] for k in self._SWAP], now_iso(), t["id"]))
                 c.execute(f"UPDATE agents SET {sets} WHERE id=?", (*[t[k] for k in self._SWAP], me))
                 left = c.execute("SELECT * FROM agents WHERE id=?", (me,)).fetchone()
-                dropped = left["thread_id"] is None and not is_online(left) and not _message_counts(c).get(me)
+                dropped = left["thread_id"] is None and not is_online(left) and not _message_counts(c).get(me) and not _has_group_links(c, me)
                 if dropped:
                     c.execute("DELETE FROM agents WHERE id=?", (me,))
                 c.execute("COMMIT")
@@ -1450,7 +1607,7 @@ class Chat:
                 n = _message_counts(c).get(row["id"], 0)
                 if n:
                     raise _Fail(f"错误：{row['name']} 有 {n} 条相关消息，只能隐藏、不能删除")
-                c.execute("DELETE FROM agents WHERE id=?", (row["id"],))
+                _delete_identity(c, row["id"])
                 c.execute("COMMIT")
             except _Fail as e:
                 c.execute("ROLLBACK")
@@ -1574,6 +1731,7 @@ class Chat:
     def _format(self, rows) -> str:
         with _conn() as c:
             names = {r["id"]: r["name"] for r in c.execute("SELECT id, name FROM agents")}
+            groups = {r["id"]: r["title"] for r in c.execute("SELECT id, title FROM groups")}
             atts: dict[int, list[sqlite3.Row]] = {}
             for r in c.execute("SELECT * FROM attachments ORDER BY id"):
                 atts.setdefault(r["message_id"], []).append(r)
@@ -1582,7 +1740,11 @@ class Chat:
             sender = names.get(m["sender_id"], "?")
             targets = self._targets(m["to_ids"])
             to_disp = "所有人" if not targets else "、".join(names.get(i, "?") for i in targets)
-            lines = [f"#{m['id']} {_fmt_time(m['created_at'])} {sender} → {to_disp}", m["text"]]
+            label = ""
+            if m["group_id"] is not None:
+                label = f"[群聊 {m['group_id']}·{groups.get(m['group_id'], '?')}] "
+                to_disp = "全体" if m["to_all"] else "、".join("@" + names.get(i, "?") for i in targets)
+            lines = [f"#{m['id']} {_fmt_time(m['created_at'])} {label}{sender} → {to_disp}", m["text"]]
             for a in atts.get(m["id"], []):
                 lines.append(f"  📎 {a['path']} ({_fmt_size(a['size'])})")
             blocks.append("\n".join(lines))
