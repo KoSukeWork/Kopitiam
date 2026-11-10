@@ -1,4 +1,5 @@
 import ssl
+import http.client
 import urllib.error
 
 import pytest
@@ -99,3 +100,35 @@ def test_local_url_and_folder_validation():
     for name in ("../kopitiam-a.kpbak", "kopitiam-a.kpbak.part", "/kopitiam-a.kpbak", "kopitiam-a.kpbak\n"):
         with pytest.raises(WebDAVError):
             validate_name(name)
+
+
+def test_truncated_responses_leave_no_download(dav, home):
+    c = client(dav)
+    c.ensure_dir()
+    source = home / "file"
+    source.write_bytes(b"some data")
+    name = "kopitiam-test.kpbak"
+    c.upload(source, name)
+    dav.truncate.update(("GET", "PROPFIND"))
+    with pytest.raises(WebDAVError, match="下载不完整|下载中断"):
+        c.download(name, home / "destination")
+    assert not (home / "destination").exists()
+    with pytest.raises(WebDAVError, match="读取文件列表中断"):
+        c.list()
+
+
+@pytest.mark.parametrize("operation", ["list", "download"])
+def test_http_exception_is_translated(dav, home, monkeypatch, operation):
+    c = client(dav)
+    class Response:
+        headers = {}
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def read(self, *args):
+            raise http.client.IncompleteRead(b"partial", 200)
+    monkeypatch.setattr(c, "_request", lambda *a, **k: Response())
+    with pytest.raises(WebDAVError, match="中断"):
+        c.list() if operation == "list" else c.download("kopitiam-test.kpbak", home / "destination")
+    assert not (home / "destination").exists()

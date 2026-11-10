@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import re
 import socket
 import ssl
@@ -129,7 +130,13 @@ class WebDAV:
         body = b'<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:getcontentlength/><d:getlastmodified/><d:resourcetype/></d:prop></d:propfind>'
         with self._request("PROPFIND", self.root, data=body, headers={"Depth": "1", "Content-Type": "application/xml"}) as response:
             # NOTE: 限制列表响应为 8 MiB；异常大或实体扩展 XML 不交给解析器。
-            raw = response.read(8 * 1024 * 1024 + 1)
+            try:
+                raw = response.read(8 * 1024 * 1024 + 1)
+                expected = response.headers.get("Content-Length")
+                if expected and expected.isdigit() and len(raw) < int(expected):
+                    raise WebDAVError("读取文件列表中断，请重试")
+            except (OSError, EOFError, http.client.HTTPException):
+                raise WebDAVError("读取文件列表中断，请重试") from None
         if len(raw) > 8 * 1024 * 1024 or b"<!DOCTYPE" in raw.upper() or b"<!ENTITY" in raw.upper():
             raise WebDAVError("WebDAV 文件列表过大或格式不安全")
         try:
@@ -205,7 +212,7 @@ class WebDAV:
                     count += len(chunk)
                     if progress:
                         progress(count, total)
-            except (OSError, EOFError):
+            except (OSError, EOFError, http.client.HTTPException):
                 raise WebDAVError("WebDAV 下载中断，请重试") from None
             if total and count != total:
                 raise WebDAVError("WebDAV 下载不完整，请重试")

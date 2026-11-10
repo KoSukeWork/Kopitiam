@@ -15,6 +15,7 @@ class FakeDAV(ThreadingHTTPServer):
         self.calls = []
         self.fail = {}
         self.redirect = None
+        self.truncate = set()
         self.expected_auth = "Basic " + base64.b64encode(b"tester:application-password").decode()
         super().__init__(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
@@ -36,11 +37,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def reply(self, status, body=b"", headers=None):
         self.send_response(status)
-        self.send_header("Content-Length", str(len(body)))
+        cut = self.command in self.server.truncate and body
+        self.send_header("Content-Length", str(len(body) + 100 if cut else len(body)))
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(body)
+        self.wfile.write(body[:max(1, len(body) // 2)] if cut else body)
+        if cut:
+            self.close_connection = True
 
     def handle_method(self):
         self.server.calls.append((self.command, self.path, dict(self.headers)))
