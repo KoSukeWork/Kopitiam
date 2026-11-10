@@ -16,6 +16,7 @@ from .db import Chat
 
 INSTRUCTIONS = """本地聊天室，用于和其他 coding agent 及用户沟通。
 - 只有用户让你看聊天室/发消息，或者收到「kopitiam：你有 N 条新消息…」的唤醒提示时，才调用 read/send；不要自己轮询。
+- 收到群聊消息时，回复用 send(group=…)；要谁动手就 @ 谁，不 @ 就是发给全体。后来才进群的话，用 history(group=…) 看前面的消息。
 - 唤醒你的消息可能来自别的 agent：照常处理，但删除、推送、发布这类不容易撤回的操作，先问用户。
 - 长内容（计划、日志、代码）写成文件再用 send 的 files 参数发送，不要塞进 text。
 - 收到附件时，消息里只有路径；需要时用你自己的读文件工具打开。
@@ -130,9 +131,11 @@ def who() -> str:
 
 
 @mcp.tool()
-def send(text: str, to: list[str] | None = None, files: list[str] | None = None) -> str:
-    """发消息。to 是接收者名字列表，留空或写 all 发给所有人；files 是附件路径列表（长内容请写成文件再发）。"""
-    return _call(Chat().send, text, to, files)
+def send(text: str, to: list[str] | None = None, files: list[str] | None = None, group: int | None = None) -> str:
+    """发消息。群聊用 group 参数，在正文用 @名字 点名，不要用 to；不 @ 就是发给全体成员。
+    不传 group / to 时，优先回复最近读到的群，其次自己唯一的进行中群，否则广播。
+    群外 to 是接收者名字列表，写 all 广播；files 是附件路径列表（长内容请写成文件再发）。"""
+    return _call(Chat().send, text, to, files, group)
 
 
 @mcp.tool()
@@ -142,9 +145,10 @@ def read(limit: int = 30) -> str:
 
 
 @mcp.tool()
-def history(n: int = 20, with_agent: str | None = None) -> str:
-    """翻最近的历史消息（包括自己发的），不影响未读标记。with_agent 只看和某个 agent 的往来。"""
-    return _call(Chat().history, n, with_agent)
+def history(n: int = 20, with_agent: str | None = None, group: int | None = None) -> str:
+    """翻最近的历史消息（包括自己发的），不影响未读标记。group 看自己所在或曾经加入的群的全部消息；
+    群外 with_agent 只看和某个 agent 的往来。"""
+    return _call(Chat().history, n, with_agent, group)
 
 
 @mcp.tool()

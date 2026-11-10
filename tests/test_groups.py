@@ -33,9 +33,10 @@ def last():
     ("@codex@web你好", [2]), ("@CoDeX@WeB", [2]), ("@codex 好", [1]),
     ("claude@Client a@b.com", []), ("@frontend", []), ("@user", [4]),
     ("@nobody", []), ("(@codex@web) @codex@web", [2]),
+    ("@username", []), ("请 @codex@web.", [2]), ("@claude@api-2", [6]),
 ])
 def test_mentions(text, expected):
-    candidates = [{"id": i, "name": n} for i, n in enumerate(["frontend", "codex", "codex@web", "Client", "user"])]
+    candidates = [{"id": i, "name": n} for i, n in enumerate(["frontend", "codex", "codex@web", "Client", "user", "claude@api", "claude@api-2"])]
     assert db.parse_mentions(text, candidates, 0) == expected
 
 
@@ -44,7 +45,7 @@ def test_group_send_routing_and_old_visibility(agents):
     chat = db.Chat()
     g = group(a, b, d)
     assert f"群聊 {g}" in chat.send(a, "hello", group=g)
-    assert set(json.loads(last()["to_ids"])) == {b, d, db.user_id()}
+    assert set(json.loads(last()["to_ids"])) == {b, d}
     assert last()["to_all"] == 1
     # 没有 to / group，且只在一个进行中的群里。
     chat.send(a, "implicit")
@@ -174,3 +175,72 @@ def test_migration_preserves_legacy_messages(agents):
     assert db.get_meta("schema_version") == "11"
     assert last()["group_id"] is None and last()["to_all"] is None
     assert "legacy" in db.Chat().read(b)
+
+
+@pytest.mark.parametrize("sender_kind, text, archived, expected", [
+    ("user", "大家开始", False, [0, 1, 2]),
+    ("user", "@codex@web 开始", False, [2]),
+    ("agent", "@codex@web 开始", False, [2]),
+    ("agent", "进展汇报", False, []),
+    ("user", "@codex@web 开始", True, []),
+])
+def test_group_wake_rules(agents, sender_kind, text, archived, expected):
+    from kopitiam.wake import detector
+    a, b, d, _ = agents
+    g = group(a, b, d)
+    detector.scan(lambda _: None)
+    db.Chat().send(db.user_id() if sender_kind == "user" else a, text, group=g)
+    if archived:
+        with db._conn() as c:
+            c.execute("UPDATE groups SET archived_at=? WHERE id=?", (db.now_iso(), g))
+    calls = detector.scan(lambda _: None)
+    assert {call.agent_id for call in calls} == {agents[i] for i in expected}
+    for call in calls:
+        assert f"群聊 {g}「订单分页」" in call.text and f"send(group={g})" in call.text
+        assert call.text.startswith(detector.WAKE_PREFIX)
+
+
+def test_group_chain_and_mixed_wake_prompt(agents):
+    from kopitiam.wake import detector
+    a, b, d, _ = agents
+    g = group(a, b, d)
+    g2 = group(a, b, title="登录页")
+    detector.scan(lambda _: None)
+    chat = db.Chat()
+    chat.send(a, "@codex one", group=g)
+    chat.send(a, "broadcast does not count", group=g)
+    chat.send(a, "@codex two", group=g2)
+    chat.send(a, "three", to=["codex"])
+    with db._conn() as c:
+        assert detector.chain_len(c, a, b, last()["id"], db.user_id()) == 3
+    calls = detector.scan(lambda _: None)
+    assert len(calls) == 1 and len(calls[0].message_ids) == 3
+    assert f"send(group={g})" in calls[0].text and f"send(group={g2})" in calls[0].text
+    assert "单聊 1 条，来自 frontend" in calls[0].text
+    assert calls[0].text.startswith(detector.WAKE_PREFIX)
+    assert detector.wake_text(["user"], 1).startswith(detector.WAKE_PREFIX)
+    chat.read(b)
+    detector.set_max_rounds(1)
+    chat.send(a, "@codex capped", group=g)
+    assert detector.scan(lambda _: None) == []
+    chat.send(db.user_id(), "reset", group=g)
+    chat.read(b)
+    chat.send(a, "@codex new round", group=g)
+    with db._conn() as c:
+        assert detector.chain_len(c, a, b, last()["id"], db.user_id()) == 1
+    assert any(call.agent_id == b for call in detector.scan(lambda _: None))
+
+
+def test_mcp_group_parameters(agents, monkeypatch):
+    import asyncio
+    from kopitiam import mcp_server
+    a, b, *_ = agents
+    g = group(a, b)
+    monkeypatch.setattr(mcp_server, "_me", lambda: a)
+    assert f"群聊 {g}" in mcp_server.send("@codex hello", group=g)
+    assert "hello" in mcp_server.history(group=g)
+    tools = asyncio.run(mcp_server.mcp.list_tools())
+    assert len(tools) == 9
+    for tool in tools:
+        if tool.name in ("send", "history"):
+            assert "group" in tool.inputSchema["properties"]

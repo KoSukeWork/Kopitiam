@@ -1,7 +1,7 @@
 """感知模块：看有没有点名发给某个开着的 agent 的新消息，按规则决定叫醒谁。
 
 只读写数据库，不管怎么叫醒——那是适配器的事（wake/<kind>.py）。规则：
-1. 只有点名发给它的消息才叫醒；发给所有人的广播不叫醒。
+1. 点名发给它的消息才叫醒；用户在群里发给全体也叫醒。agent 群发、群外广播和已归档的群不叫醒。
 2. 用户发的（包括转发的）总是叫醒；agent 发给 agent 的，两个 agent 之间连续来回超过上限就不叫醒
    （消息照常送到）。用户对其中任何一个说话（在 kopitiam 里发消息，或者直接在它的窗口里打字，见 user_spoke）、
    或者两个 agent 之间 WAKE_CHAIN_IDLE 没说话，就重新计数。
@@ -65,8 +65,17 @@ def set_max_rounds(n: int) -> None:
 WAKE_PREFIX = "kopitiam：你有 "
 
 
-def wake_text(senders: list[str], count: int) -> str:
+def wake_text(senders: list[str], count: int, rooms: dict[int | None, dict] | None = None) -> str:
     who = "、".join(senders)
+    if rooms and any(g is not None for g in rooms):
+        parts = []
+        for g, room in rooms.items():
+            label = f"群聊 {g}「{room['title']}」" if g is not None else "单聊"
+            number = f" {room['count']} 条" if len(rooms) > 1 else ""
+            parts.append(f"{label}{number}，来自 {'、'.join(room['senders'])}")
+        replies = "、".join(f"send(group={g})" for g in rooms if g is not None)
+        return (f"{WAKE_PREFIX}{count} 条新消息（{'；'.join(parts)}）。请调用 kopitiam 的 read 查看，按内容处理；"
+                f"回复群聊用 {replies}，要谁动手就 @ 谁。" + ("单聊照常用 send 发给对方。" if None in rooms else ""))
     return (f"{WAKE_PREFIX}{count} 条新消息（来自 {who}）。请调用 kopitiam 的 read 查看，"
             "按内容处理；需要回复就用 send 发给对方。")
 
@@ -105,7 +114,7 @@ def chain_len(c, a: int, b: int, upto: int, user: int, idle: float = WAKE_CHAIN_
     数到 since（用户最近一次直接在 a 或 b 的窗口里打字）以前的也停。
     """
     rows = c.execute(
-        "SELECT id, sender_id, to_ids, created_at FROM messages"
+        "SELECT id, sender_id, to_ids, created_at, group_id, to_all FROM messages"
         " WHERE id <= ? AND sender_id IN (?, ?, ?) ORDER BY id DESC LIMIT 500",
         (upto, a, b, user),
     ).fetchall()
@@ -117,6 +126,8 @@ def chain_len(c, a: int, b: int, upto: int, user: int, idle: float = WAKE_CHAIN_
             if not t or a in t or b in t:
                 break
             continue
+        if r["group_id"] is not None and r["to_all"]:
+            continue  # agent 的群发不计数，也不打断。
         other = b if r["sender_id"] == a else a
         if other not in t:
             continue  # a 或 b 发给别人、或者广播：不算，也不打断
@@ -166,10 +177,13 @@ def scan(check: Callable[[dict], str | None]) -> list[WakeCall]:
                 if stop or not a["enabled"] or a["archived_at"] or a["trashed_at"] or not db.is_online(a):
                     continue  # 这期间的消息以后也不补叫（归档的、在回收站里的也不叫）
                 rows = c.execute(
-                    "SELECT id, sender_id, to_ids FROM messages WHERE id > ? AND sender_id <> ? ORDER BY id",
+                    "SELECT m.*, g.title AS group_title, g.archived_at AS group_archived FROM messages m"
+                    " LEFT JOIN groups g ON g.id=m.group_id WHERE m.id > ? AND m.sender_id <> ? ORDER BY m.id",
                     (start, a["id"]),
                 ).fetchall()
-                pending = [r for r in rows if a["id"] in _targets(r["to_ids"])]
+                pending = [r for r in rows if a["id"] in _targets(r["to_ids"])
+                           and not r["group_archived"]
+                           and not (r["group_id"] is not None and r["to_all"] and r["sender_id"] != user)]
                 if not pending:
                     continue
                 ok = [r for r in pending
@@ -191,7 +205,15 @@ def scan(check: Callable[[dict], str | None]) -> list[WakeCall]:
                 senders = list(dict.fromkeys(names.get(r["sender_id"], "?") for r in ok))
                 call = WakeCall(a["id"], a["name"], a["kind"], a["pid"], [r["id"] for r in ok], senders,
                                 prev_woken_upto=a["woken_upto"], thread_id=a["thread_id"], host=a["host"])
-                call.text = wake_text(senders, len(ok))
+                rooms = {}
+                for r in ok:
+                    gid = r["group_id"]
+                    room = rooms.setdefault(gid, {"title": r["group_title"] or "", "count": 0, "senders": []})
+                    room["count"] += 1
+                    sender = names.get(r["sender_id"], "?")
+                    if sender not in room["senders"]:
+                        room["senders"].append(sender)
+                call.text = wake_text(senders, len(ok), rooms)
                 c.execute("UPDATE wake_state SET woken_upto=?, woken_pid=? WHERE agent_id=?",
                           (max(call.message_ids), a["pid"], a["id"]))
                 calls.append(call)

@@ -952,7 +952,9 @@ def parse_mentions(text: str, candidates, sender: int) -> list[int]:
         tail = text[match.end():].lower()
         for row in names:
             if tail.startswith(row["name"].lower()):
-                if row["id"] != sender and row["id"] not in found:
+                end = len(row["name"])
+                boundary = end == len(tail) or not re.match(r"[a-z0-9_]", tail[end])
+                if boundary and row["id"] != sender and row["id"] not in found:
                     found.append(row["id"])
                 break
     return found
@@ -1128,8 +1130,6 @@ class Chat:
                     if to_all:
                         to_ids = [r[0] for r in c.execute("SELECT agent_id FROM group_members WHERE group_id=?"
                                                          " AND agent_id<>? ORDER BY agent_id", (group, me))]
-                        if uid != me:
-                            to_ids.append(uid)
                     if not to_ids:
                         to_ids = [uid]  # 旧 MCP 用 [] 表示广播，群里永远不能写 []。
                 elif not broadcast:
