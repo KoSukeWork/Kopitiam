@@ -48,6 +48,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_method(self):
         self.server.calls.append((self.command, self.path, dict(self.headers)))
+        # Consume the request before any early response. Closing with an unread
+        # body can reset the Windows socket and hide the intended HTTP error.
+        body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         if self.headers.get("Authorization") != self.server.expected_auth:
             return self.reply(401)
         if self.server.redirect:
@@ -63,7 +66,7 @@ class Handler(BaseHTTPRequestHandler):
             path.mkdir()
             return self.reply(201)
         if self.command == "PUT":
-            path.write_bytes(self.rfile.read(int(self.headers["Content-Length"])))
+            path.write_bytes(body)
             return self.reply(201)
         if self.command == "MOVE":
             dest = self.server.root / unquote(urlsplit(self.headers["Destination"]).path).lstrip("/")
@@ -79,7 +82,6 @@ class Handler(BaseHTTPRequestHandler):
             path.unlink()
             return self.reply(204)
         if self.command == "PROPFIND":
-            self.rfile.read(int(self.headers.get("Content-Length", "0")))
             root = ET.Element("{DAV:}multistatus")
             for f in [path, *path.iterdir()]:
                 response = ET.SubElement(root, "{DAV:}response")

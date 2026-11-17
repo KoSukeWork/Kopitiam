@@ -1,5 +1,6 @@
 import ssl
 import http.client
+import time
 import urllib.error
 
 import pytest
@@ -62,7 +63,16 @@ def test_webdav_http_errors(dav, code, text):
     assert str(code) in str(e.value)
 
 
-def test_wrong_credentials_and_redirect_do_not_leak(dav, home):
+@pytest.mark.parametrize("body_delay", [0, .01])
+def test_wrong_credentials_and_redirect_do_not_leak(dav, home, monkeypatch, body_delay):
+    # Headers and body are separate sends. Let the server see the headers first
+    # to reproduce a Windows reset if it closes without consuming the body.
+    original_send = http.client.HTTPConnection.send
+    def send(connection, data):
+        if isinstance(data, bytes) and data.startswith(b"<?xml"):
+            time.sleep(body_delay)
+        return original_send(connection, data)
+    monkeypatch.setattr(http.client.HTTPConnection, "send", send)
     c = WebDAV(dav.url, "tester", "wrong")
     with pytest.raises(WebDAVError, match="401"):
         c.list()
