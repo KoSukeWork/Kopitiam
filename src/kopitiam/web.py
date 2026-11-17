@@ -2246,7 +2246,7 @@ function agentRow(a) {
   const sub = a.name === "user" ? "你 · 网页"
     : a.kind === "remote" ? ((a.peer_name && a.peer_name !== a.name ? a.peer_name + " · " : "")
         + (noShare ? "没开团队连接，收不到消息 · " + a.cwd.slice(0, -2) : (a.online ? "在线" : "离线") + " · " + a.cwd))
-    : acpInfo.sessions[a.name] ? acpLabel(acpInfo.sessions[a.name]) + " · " + a.cwd
+    : acpInfo.sessions[a.name] ? (acpInfo.sessions[a.name].error ? "出错：" + acpInfo.sessions[a.name].error : acpLabel(acpInfo.sessions[a.name]) + " · " + a.cwd)
     : a.title ? a.title + " · " + a.cwd : a.cwd;
   info.append(line1, el("div", "cwd" + (noShare ? " warn" : ""), sub));
   const av = avatar(a.name, a.online, false, a.kind);
