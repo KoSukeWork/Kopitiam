@@ -20,6 +20,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import backup, db, peer
+from .acp import web as acp_web
+from .acp.client import ACPError
 from .config import FILE_MAX, PEER_PORT, WEB_PORT, files_dir, safe
 from .db import Chat
 from .wake import detector
@@ -161,6 +163,7 @@ def make_server(port: int = WEB_PORT, *, peer_host: str = "0.0.0.0", peer_port: 
         from .acp.managed import Runtime
         try:
             srv.acp = Runtime()
+            srv.acp.web_url = f"http://127.0.0.1:{srv.server_address[1]}/?t={token}"
         except Exception:
             srv.server_close()
             raise
@@ -243,6 +246,19 @@ class _Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/":
             return self._send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
+        if u.path in ("/api/acp", "/api/acp/activity"):
+            if not self._token_header_ok():
+                return self._deny()
+            try:
+                if u.path == "/api/acp":
+                    return self._json(acp_web.state(self.server))
+                query = parse_qs(u.query)
+                after = int(query.get("after", ["0"])[0])
+                if after < 0:
+                    raise ValueError("after 不能小于 0")
+                return self._json(acp_web.runtime(self.server).activity(query.get("agent", [None])[0], after))
+            except (ValueError, OSError, LookupError) as error:
+                return self._json({"ok": False, "message": str(error)}, 400)
         if u.path == "/api/state":
             if not self._token_header_ok():
                 return self._deny()
@@ -254,6 +270,7 @@ class _Handler(BaseHTTPRequestHandler):
             msgs = self._with_urls(chat.messages_after(after, 200))
             return self._json({"agents": chat.agents_brief(), "messages": msgs,
                                "restart_required": self.server.backup.read_only,
+                               "acp": acp_web.state(self.server),
                                "groups": chat.groups_brief(), "deliveries": chat.delivery_updates(), "wake": wake_service.overview()})
         if u.path == "/api/team":
             if not self._token_header_ok():
@@ -335,6 +352,14 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._token_header_ok():
             return self._deny()
         u = urlparse(self.path)
+        if u.path.startswith("/api/acp/"):
+            data = self._read_json()
+            if data is None:
+                return
+            try:
+                return self._json({"ok": True, **acp_web.post(self.server, u.path, data, self.user_id_value)})
+            except (ValueError, OSError, LookupError, ACPError) as error:
+                return self._json({"ok": False, "message": str(error)}, 400)
         if u.path == "/api/send":
             return self._api_send()
         if u.path == "/api/upload":
@@ -1148,6 +1173,13 @@ main.page > #groupHeader { display:none; }
     <div id="groupMembers"></div>
   </div>
   <div id="conn" role="status" hidden></div>
+  <section id="acpPanel" hidden aria-label="agy 托管会话">
+    <div id="acpToolbar" class="acp-toolbar"></div>
+    <div id="acpError" class="acp-notice" role="status" hidden></div>
+    <div id="acpNotice" class="acp-notice" role="status" hidden></div>
+    <div id="acpPermissions"></div>
+    <details id="acpActivity"><summary>过程<span class="acp-history-label">最近 3 轮</span></summary><div id="acpEvents"></div></details>
+  </section>
   <div id="restoreBanner" role="status" hidden>正在恢复 / 已恢复，请关掉 kopitiam web 再重新打开，再重开各个 agent。</div>
   <div id="stream">
     <div id="list"></div>
@@ -1576,6 +1608,7 @@ function renderGroups() {
 }
 
 function renderGroupHeader() {
+  renderACP();
   const g = groupsById[selectedGroup];
   if (!g) return;
   const key = JSON.stringify(g) + JSON.stringify(wakeInfo) + JSON.stringify(g.members.map(n => agentsByName[n]));
@@ -2049,7 +2082,7 @@ function fmtSize(n) {
 
 function renderAgents(agents) {
   agentsByName = Object.fromEntries(agents.map(a => [a.name, a]));
-  const j = JSON.stringify(agents) + "|" + selected + "|" + JSON.stringify(wakeInfo);
+  const j = JSON.stringify(agents) + "|" + selected + "|" + JSON.stringify(wakeInfo) + "|" + JSON.stringify(acpInfo);
   if (j === agentJson) return;
   agentJson = j;
   const shownAgents = agents.filter(a => !a.hidden);  // 归档的、离线超过 7 天的收进「已归档 / 隐藏」子页面
@@ -2061,7 +2094,9 @@ function renderAgents(agents) {
   $("brandsub").textContent = n ? n + " 个 agent 在线" : "本地聊天室 · 暂无 agent 在线";
   const box = $("agents");
   box.textContent = "";
-  box.append(el("div", "section", "在线 · " + online.length));
+  const onlineHeading = el("div", "section");
+  const newAgy = el("button", "acp-add", "＋ agy 会话"); newAgy.onclick = openAgySession;
+  onlineHeading.append(el("span", "", "在线 · " + online.length), newAgy); box.append(onlineHeading);
   for (const a of online) box.append(agentRow(a));
   // 团队：别的电脑上的同事（人和人之间；他们的消息只到你这里）
   const th = el("div", "section team-head");
@@ -2211,9 +2246,14 @@ function agentRow(a) {
   const sub = a.name === "user" ? "你 · 网页"
     : a.kind === "remote" ? ((a.peer_name && a.peer_name !== a.name ? a.peer_name + " · " : "")
         + (noShare ? "没开团队连接，收不到消息 · " + a.cwd.slice(0, -2) : (a.online ? "在线" : "离线") + " · " + a.cwd))
+    : acpInfo.sessions[a.name] ? acpLabel(acpInfo.sessions[a.name]) + " · " + a.cwd
     : a.title ? a.title + " · " + a.cwd : a.cwd;
   info.append(line1, el("div", "cwd" + (noShare ? " warn" : ""), sub));
   const av = avatar(a.name, a.online, false, a.kind);
+  if (acpInfo.sessions[a.name]?.state === "waiting_permission") {
+    const dot = el("span", "acp-dot"); dot.title = "等你确认"; av.append(dot);
+  }
+  if (acpInfo.sessions[a.name]?.state === "working") av.classList.add("acp-working");
   if ((talking[a.name] || 0) > Date.now()) av.classList.add("talk");
   if ((woke[a.name] || 0) > Date.now()) av.classList.add("woke");
   const wb = wakeBadge(a.name);
@@ -2289,6 +2329,7 @@ function applyFilter() {
 }
 
 function updateConvbar() {
+  renderACP();
   if (selectedGroup) { renderGroupHeader(); return; }
   const a = selected && agentsByName[selected];
   $("convtitle").textContent = selected === "user" ? "我的消息" : selected ? "与 " + selected + " 的对话" : "全部消息";
@@ -2431,8 +2472,10 @@ async function poll() {
   for (const m of (st.messages || [])) addMessage(m);
   for (const [id, d] of Object.entries(st.deliveries || {})) setDelivery(id, d);
   wakeInfo = st.wake || null;
+  acpInfo = st.acp || {available:false, sessions:{}};
   renderWakeBtn();
   renderAgents(st.agents || []);
+  renderACP();
   renderGroups();
   if (selectedGroup) { renderGroupHeader(); loadGroupHistory(selectedGroup); }
   for (const [name, a] of Object.entries((wakeInfo || {}).agents || {})) {
@@ -2656,3 +2699,8 @@ setInterval(poll, 1500);
 </body>
 </html>
 """.replace("__PEER_PORT__", str(PEER_PORT))
+
+# Keep the ACP view beside its host without duplicating the page's DOM helpers.
+INDEX_HTML = INDEX_HTML.replace("</style>", (Path(__file__).parent / "acp/web.css").read_text(encoding="utf-8") + "\n</style>")
+_page_script, _page_end = INDEX_HTML.rsplit("</script>", 1)
+INDEX_HTML = _page_script + (Path(__file__).parent / "acp/web.js").read_text(encoding="utf-8") + "\n</script>" + _page_end

@@ -24,10 +24,15 @@ def check(agent):
         return "这个会话由另一个网页进程托管"
     if presence_locked(row["session_id"]):
         return "这个对话在终端里开着，先在终端退出"
-    state = runtime.state(row)
-    if state["state"] == "error":
-        return state["error"] or "agy 会话出错"
+    if not row["session_id"] and row["id"] in runtime.errors:
+        return runtime.errors[row["id"]] + "；请删除后重新创建"
     return None
+
+
+def hint(agent):
+    runtime = get_runtime()
+    row = db.get_acp(agent["id"])
+    return runtime.state(row)["error"] if runtime and row else None
 
 
 def wake(call):

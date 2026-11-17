@@ -79,9 +79,11 @@ class Runtime:
         self._hosts = {}
         self._creating = set()
         self._removed = set()
+        self._paused = set()
         self._sessions = {}  # agent ID -> (host, ACP session ID)
         self.errors = {}
         self.closed = False
+        self.web_url = None
         self.host_factory = host_factory or (lambda backend: Host(backend=backend))
         with _registry_lock:
             if self.home in _runtimes:
@@ -98,6 +100,7 @@ class Runtime:
                 host = self.host_factory(backend)
                 host.before_resume = host.before_prompt = self._check_presence
                 host.permission_policy = self._permission
+                host.on_permission = self._notify_permission
                 self._hosts[backend] = host
             return self._hosts[backend]
 
@@ -127,7 +130,7 @@ class Runtime:
         if not row["session_id"]:
             raise ValueError(self.errors.get(row["id"], "会话尚未建好，请重新创建"))
         with self._lock:
-            if self.closed or row["id"] in self._removed:
+            if self.closed or row["id"] in self._removed or row["id"] in self._paused:
                 raise ValueError("托管会话已关闭")
             if row["id"] not in self._sessions:
                 host = self._host(row["backend"])
@@ -160,13 +163,130 @@ class Runtime:
                 self._creating.discard(agent_id)
 
     def wake(self, agent_id, text):
-        row = db.get_acp(agent_id)
-        if not row:
+        with self._lock:
+            row = db.get_acp(agent_id)
+            if not row:
+                raise ValueError("托管会话不存在")
+            if presence_locked(row["session_id"]):
+                raise ValueError("这个对话在终端里开着，先在终端退出")
+            host, sid = self._register(row)
+            return host.wake(sid, text)
+
+    def lookup(self, name):
+        if not isinstance(name, str):
+            raise ValueError("请选择一个托管会话")
+        row = next((r for r in db.list_acp() if r["name"].casefold() == name.casefold()), None)
+        if row is None:
             raise ValueError("托管会话不存在")
-        if presence_locked(row["session_id"]):
-            raise ValueError("这个对话在终端里开着，先在终端退出")
-        host, sid = self._register(row)
-        return host.wake(sid, text)
+        if db.is_online(row) and row["pid"] != os.getpid():
+            raise ValueError("这个会话由另一个网页进程托管")
+        return row
+
+    def _notify_permission(self, session, token, params):
+        from ..wake import notify
+        with self._lock:
+            ident = next((ident for ident, (_, sid) in self._sessions.items() if sid == session.session_id), None)
+        row = db.get_acp(ident) if ident is not None else None
+        if row:
+            notify.toast(f"{row['name']} 等你确认", str(params.get("toolCall", {}).get("title", "确认操作"))[:200],
+                         launch=self.web_url, tag=f"agy-{ident}")
+
+    def answer(self, name, token, option):
+        row = self.lookup(name)
+        pair = self._sessions.get(row["id"])
+        if not pair or not isinstance(token, str) or not isinstance(option, str):
+            raise ValueError("权限请求已结束或格式不正确")
+        pair[0].answer_permission(pair[1], token, option)
+        from ..wake import notify
+        notify.remove(f"agy-{row['id']}")
+
+    def cancel_agent(self, name):
+        row = self.lookup(name)
+        pair = self._sessions.get(row["id"])
+        if pair:
+            pair[0].cancel(pair[1])
+        from ..wake import notify
+        notify.remove(f"agy-{row['id']}")
+
+    def set_policy(self, name, policy):
+        row = self.lookup(name)
+        if policy not in ("workspace", "all"):
+            raise ValueError("权限模式必须是 workspace 或 all")
+        with db._conn() as connection:
+            connection.execute("UPDATE acp_sessions SET policy=? WHERE agent_id=?", (policy, row["id"]))
+
+    def activity(self, name, after=0):
+        row = self.lookup(name)
+        pair = self._sessions.get(row["id"])
+        if pair:
+            with pair[0]._lock:
+                session = pair[0].sessions.get(pair[1])
+                if session:
+                    return session.activity.snapshot(after)
+        return {"seq": 0, "reset": after != 0, "events": []}
+
+    def handoff(self, name):
+        with self._lock:
+            row = self.lookup(name)
+            state = self.state(row)
+            if state["state"] in ("working", "waiting_permission") or state["queued"] or row["id"] in self._creating:
+                raise ValueError("会话正在工作，请先停止这一轮")
+            if row["id"] in self._paused:
+                raise ValueError("正在切换会话的托管方式，请稍后重试")
+            if not row["session_id"]:
+                raise ValueError("会话尚未创建成功，不能交给终端")
+            self._paused.add(row["id"])
+            pair = self._sessions.get(row["id"])
+        try:
+            if pair:
+                pair[0].close_session(pair[1])
+            with db._conn() as connection:
+                connection.execute("UPDATE acp_sessions SET handed_off=? WHERE agent_id=?", (db.now_iso(), row["id"]))
+        finally:
+            with self._lock:
+                self._paused.discard(row["id"])
+        quote = lambda text: "'" + text.replace("'", "''") + "'"
+        return ["Set-Location -LiteralPath " + quote(row["session_cwd"]),
+                "agy --conversation " + quote(row["session_id"])]
+
+    def retry(self, name):
+        with self._lock:
+            row = self.lookup(name)
+            if not row["session_id"]:
+                raise ValueError("会话未创建成功，请删除后重新创建")
+            host, sid = self._register(row)
+            self._paused.add(row["id"])
+        try:
+            self._check_presence(host.sessions[sid])
+            host.reconnect(sid)
+            with db._conn() as connection:
+                connection.execute("UPDATE wake_state SET woken_pid=NULL WHERE agent_id=?", (row["id"],))
+        finally:
+            with self._lock:
+                self._paused.discard(row["id"])
+
+    def takeback(self, name):
+        with self._lock:
+            row = self.lookup(name)
+            if row["id"] in self._paused:
+                raise ValueError("正在切换会话的托管方式，请稍后重试")
+            self._paused.add(row["id"])
+        try:
+            if presence_locked(row["session_id"]):
+                raise ValueError("这个对话在终端里开着，先在终端退出")
+            with db._conn() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    connection.execute("UPDATE acp_sessions SET handed_off=NULL WHERE agent_id=?", (row["id"],))
+                    connection.execute("UPDATE agents SET pid=?,pid_ctime=? WHERE id=?",
+                                       (os.getpid(), db._pid_ctime(os.getpid()), row["id"]))
+                    connection.execute("COMMIT")
+                except BaseException:
+                    connection.execute("ROLLBACK")
+                    raise
+        finally:
+            with self._lock:
+                self._paused.discard(row["id"])
 
     def state(self, row):
         if row["handed_off"]:
@@ -176,13 +296,15 @@ class Runtime:
                 return {"state": "error", "error": self.errors[row["id"]], "permissions": [], "queued": 0}
             pair = self._sessions.get(row["id"])
             if pair:
-                return pair[0].snapshot()[pair[1]]
+                snapshot = pair[0].snapshot().get(pair[1])
+                if snapshot:
+                    return snapshot
         return {"state": "not_loaded", "error": None, "permissions": [], "queued": 0}
 
     def remove(self, agent_id):
         with self._lock:
-            if agent_id in self._creating:
-                raise ValueError("正在创建这个会话，请稍后删除")
+            if agent_id in self._creating or agent_id in self._paused:
+                raise ValueError("正在创建或切换这个会话，请稍后删除")
             self._removed.add(agent_id)
             pair = self._sessions.get(agent_id)
         if pair:

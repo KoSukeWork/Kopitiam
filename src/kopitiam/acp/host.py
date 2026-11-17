@@ -139,14 +139,35 @@ class Host:
                 result = client.request("session/resume", {
                     "sessionId": session.session_id, "cwd": session.cwd,
                     "mcpServers": session.mcp_servers}, timeout=60)
+                self._apply_options(client, session)
                 with self._lock:
                     session.loaded_generation = self._generation
                     session.metadata = result
-                self._apply_options(client, session)
             return client
         finally:
             with self._lock:
                 self._opening -= 1
+
+    def reconnect(self, session_id):
+        """Validate resume and options without sending a model prompt."""
+        with self._lock:
+            session = self.sessions[session_id]
+            if session.closing or session.worker or session.queue:
+                raise ValueError("会话正在工作，请先停止这一轮")
+            session.closing = True
+            session.state, session.error = "working", None
+            session.loaded_generation = 0
+        try:
+            self._ensure_loaded(session)
+            with self._lock:
+                session.state = "idle"
+        except Exception as error:
+            with self._lock:
+                session.state, session.error = "error", self._error_text(error)
+            raise
+        finally:
+            with self._lock:
+                session.closing = False
 
     def wake(self, session_id, text):
         """Return immediately; the future completes when this queued turn ends."""

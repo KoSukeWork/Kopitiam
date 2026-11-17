@@ -611,6 +611,9 @@ def create_acp(cwd: str, *, backend: str = "agy", name: str | None = None,
                                      pid=pid, pid_ctime=_pid_ctime(pid), host="agy-acp")
             c.execute("INSERT INTO acp_sessions(agent_id,backend,cwd,policy,options,created_at) VALUES(?,?,?,?,?,?)",
                       (agent_id, backend, str(path), policy, json.dumps(options or {}), now_iso()))
+            # A newly created managed session must receive its first task even if
+            # the wake detector has not seen this identity yet.
+            c.execute("INSERT INTO wake_state(agent_id,seen_upto) SELECT id,last_read FROM agents WHERE id=?", (agent_id,))
             c.execute("COMMIT")
             return agent_id
         except BaseException:

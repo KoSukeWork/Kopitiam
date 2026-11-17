@@ -212,7 +212,7 @@ def test_agy_check_reasons_and_terminal_is_not_a_warning(home, monkeypatch):
         assert "先在终端退出" in agy.check(row(agent_id))
         monkeypatch.setattr(agy, "presence_locked", lambda sid: False)
         runtime.errors[agent_id] = "model unavailable"
-        assert agy.check(row(agent_id)) == "model unavailable"
+        assert "model unavailable" in agy.check(row(agent_id))
         runtime.errors.clear()
         assert agy.check(row(agent_id)) is None
         called = []
@@ -221,6 +221,18 @@ def test_agy_check_reasons_and_terminal_is_not_a_warning(home, monkeypatch):
         assert called == [(agent_id, "read messages")]
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("failure", ["auth", "crash"])
+def test_failed_turn_is_hint_and_next_wake_recovers(runtime, home, failure):
+    record = runtime.create(str(home))
+    with pytest.raises(Exception):
+        runtime.wake(record["id"], failure).result(5)
+    assert agy.check(record) is None
+    assert agy.hint(record)
+    assert service.overview()["agents"][record["name"]]["hint"]
+    assert runtime.wake(record["id"], "recover").result(5)["stopReason"] == "end_turn"
+    assert agy.hint(record) is None
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows presence byte lock")
