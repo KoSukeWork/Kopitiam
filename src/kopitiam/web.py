@@ -68,6 +68,7 @@ class WriteGate:
 class _WebServer(ThreadingHTTPServer):
     peer_service: peer.PeerService | None = None
     wake_service: WakeService | None = None
+    acp = None
 
     def pause_for_restore(self) -> None:
         # 先让两个后台服务都看到停止标记，再等待已有操作退出。
@@ -79,6 +80,8 @@ class _WebServer(ThreadingHTTPServer):
         if self.peer_service:
             self.peer_service.pause_for_restore()
         self.write_gate.close_and_wait()
+        if self.acp:
+            self.acp.close()
 
     def server_close(self) -> None:  # 网页关掉时，团队端口、后台投递线程、自动唤醒一起停
         super().server_close()
@@ -87,6 +90,8 @@ class _WebServer(ThreadingHTTPServer):
             self.peer_service.stop()
         if self.wake_service:
             self.wake_service.stop()
+        if self.acp:
+            self.acp.close()
 
 
 def _port_owner(port: int) -> str:
@@ -153,6 +158,12 @@ def make_server(port: int = WEB_PORT, *, peer_host: str = "0.0.0.0", peer_port: 
             print(f"警告：{e}，团队连接没有打开")
     service.start_worker()
     if wake:
+        from .acp.managed import Runtime
+        try:
+            srv.acp = Runtime()
+        except Exception:
+            srv.server_close()
+            raise
         srv.wake_service = WakeService()
         srv.wake_service.start()
     return srv, token, f"http://127.0.0.1:{srv.server_address[1]}/?t={token}"

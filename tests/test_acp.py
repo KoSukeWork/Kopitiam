@@ -68,13 +68,15 @@ def test_wakes_queue_until_permission_and_turn_finish(host, home):
     assert "second:end" in str(session.activity.snapshot())
 
 
-def test_malformed_frame_fails_waiters_and_stops_process(home):
+def test_stdout_diagnostics_are_logged_without_breaking_next_prompt(home):
     client = Client(FAKE, cwd=home, log_file=home / "acp.log")
     try:
         client.start()
-        with pytest.raises(ACPError, match="stream failed"):
-            client.request("test/bad_frame", {}, timeout=3)
-        until(lambda: client.tree.process.poll() is not None)
+        assert client.request("test/bad_frame", {}, timeout=3) == {}
+        sid = client.request("session/new", {"cwd": str(home), "mcpServers": []}, timeout=3)["sessionId"]
+        assert client.request("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": "after noise"}]},
+                              timeout=3)["stopReason"] == "end_turn"
+        assert "ignored stdout" in (home / "acp.log").read_text(encoding="utf-8")
     finally:
         client.close()
 

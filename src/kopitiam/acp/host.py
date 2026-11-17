@@ -50,10 +50,12 @@ class Session:
 
 class Host:
     def __init__(self, *, backend="agy", command=None, cwd=None, env=None,
-                 permission_policy=None, on_permission=None, idle_timeout=1800):
+                 permission_policy=None, on_permission=None, idle_timeout=1800,
+                 before_resume=None, before_prompt=None):
         self.backend, self.command, self.env = backend, command, env
         self.cwd = str(cwd or data_dir())
         self.permission_policy, self.on_permission = permission_policy, on_permission
+        self.before_resume, self.before_prompt = before_resume, before_prompt
         self.idle_timeout = idle_timeout
         self.sessions: dict[str, Session] = {}
         self._permissions = {}
@@ -118,7 +120,8 @@ class Host:
     def _apply_options(self, client, session):
         params = {"sessionId": session.session_id}
         if session.options.get("model"):
-            client.request("session/set_model", {**params, "modelId": session.options["model"]}, timeout=30)
+            client.request("session/set_config_option", {
+                **params, "configId": "model", "value": session.options["model"]}, timeout=30)
         if session.options.get("effort"):
             client.request("session/set_config_option", {
                 **params, "configId": "thought_level", "value": session.options["effort"]}, timeout=30)
@@ -131,6 +134,8 @@ class Host:
         try:
             client = self._get_client()
             if session.loaded_generation != self._generation:
+                if self.before_resume:
+                    self.before_resume(session)
                 result = client.request("session/resume", {
                     "sessionId": session.session_id, "cwd": session.cwd,
                     "mcpServers": session.mcp_servers}, timeout=60)
@@ -176,6 +181,8 @@ class Host:
                 with self._lock:
                     if epoch != session.epoch or self._closed.is_set():
                         raise ACPError("Session closed")
+                if self.before_prompt:
+                    self.before_prompt(session)
                 result = client.request("session/prompt", {
                     "sessionId": session.session_id, "prompt": [{"type": "text", "text": text}]})
                 with self._lock:

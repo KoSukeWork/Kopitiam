@@ -98,8 +98,9 @@ def handle(message):
         reply(ident, {})
     elif method == "test/bad_frame":
         with write_lock:
-            sys.stdout.write("not json\n")
+            sys.stdout.write("not json\n[1, 2]\n")
             sys.stdout.flush()
+        reply(ident, {})
     else:
         send({"id": ident, "error": {"code": -32601, "message": "Method not found"}})
 

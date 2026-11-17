@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import atexit
 import os
+import sys
 from contextlib import closing
 
 from mcp.server.fastmcp import FastMCP
@@ -31,24 +32,27 @@ _NAME: str | None = None
 _HOST = 0             # agent 本身的进程（db.host_pid）
 _HOST_TAG: str | None = None  # 托管的是哪一类进程（见 agents.host）
 _ME: int | None = None  # 按进程认领的身份
+_MANAGED = False       # --agent-id：不能自动认领其他行，也不在退出时清 pid
+_MISMATCHES: set[str] = set()
 _THREAD: str | None = None  # 共用一个身份时：最近一次记下的对话 ID，没变就不重复写库
 _BY_THREAD: dict[str, int] = {}  # 一个对话一个身份时：对话 ID → agent id
 _TITLES: dict[str, str] = {}  # dsh：最近记下的会话标题，没变就不重复写库
 
 
 def _per_thread() -> bool:
-    """Codex、dsh 没给固定名字（--name）：一个对话一个身份。
+    """Codex、dsh、agy 没给固定名字（--name）：一个对话一个身份。
 
     启动 MCP 进程时还不知道是哪个对话，所以第一次调用工具时才认领（见 _request_thread）。
     给了 --name 就和以前一样，所有对话共用那一个身份。
     """
-    return _KIND in ("codex", "dsh") and _NAME is None
+    return _KIND in ("codex", "dsh", "agy") and _NAME is None
 
 
 def _request_thread() -> tuple[str, str | None, str | None] | None:
     """这次调用来自哪个对话：(对话 ID, 工作目录, 标题)；不知道就是 None，后两项不知道也是 None。
 
     Codex 每次调用工具都在 _meta.threadId 里带上对话 ID（工作目录从它的记录文件里读，见 _thread_cwd）。
+    agy 用 root_conversation_id（没有时用 conversation_id），子 agent 归到主对话；目录沿用 MCP 的启动目录。
     dsh 什么都不带：它的插件在调用前把会话写进 wake/dsh-<dsh 进程号>.calling.json（见 wake/dsh_wake.mjs）。
     """
     if _KIND == "dsh":
@@ -56,7 +60,9 @@ def _request_thread() -> tuple[str, str | None, str | None] | None:
         return calling(_HOST)
     try:
         meta = mcp.get_context().request_context.meta
-        tid = (meta.model_extra or {}).get("threadId") if meta is not None else None
+        extra = (meta.model_extra or {}) if meta is not None else {}
+        tid = (extra.get("antigravity.google/root_conversation_id") or
+               extra.get("antigravity.google/conversation_id")) if _KIND == "agy" else extra.get("threadId")
     except Exception:
         return None  # 不在请求里（测试直接调用）或者客户端没带
     return (str(tid), None, None) if tid else None
@@ -76,6 +82,18 @@ def _thread_cwd(thread: str) -> str:
 
 def _me() -> int:
     global _ME, _THREAD
+    if _MANAGED:
+        row = _row(_ME)
+        if row is None or row["kind"] != "agy" or row["host"] != "agy-acp":
+            raise LookupError("指定的 agy 托管身份已不存在")
+        conv = _request_thread()
+        expected = db.get_acp(_ME)
+        if (conv and expected and expected["session_id"] and conv[0] != expected["session_id"]
+                and conv[0] not in _MISMATCHES):
+            _MISMATCHES.add(conv[0])
+            print(f"kopitiam: agy conversation mismatch: expected {expected['session_id']!r}, got {conv[0][:128]!r}",
+                  file=sys.stderr)
+        return _ME
     conv = _request_thread()
     tid, title = (conv[0], conv[2]) if conv else (None, None)
     if tid and _per_thread():
@@ -185,6 +203,8 @@ def _switch(me: int, name: str | None) -> str:
 @mcp.tool()
 def set_cwd(path: str) -> str:
     """修正自己的工作目录（导出对话记录时按它找记录）。必须是已存在的文件夹。"""
+    if _MANAGED:
+        return "错误：托管会话的工作目录由网页创建时指定；请新建会话以更换目录。"
     return _call(Chat().set_cwd, path)
 
 
@@ -201,6 +221,8 @@ def _release() -> None:
     桌面版关了，is_online 自然会当它离线。daemon 托管的记的是命令行窗口（或者这个进程），关了自然离线。
     dsh 的会话身份也不动：dsh 开着就叫得醒它的任何会话，dsh 关了自然离线。
     """
+    if _MANAGED:
+        return
     ids = [] if _HOST_TAG else list(_BY_THREAD.values())
     if _ME is not None:
         ids.append(_ME)
@@ -208,26 +230,37 @@ def _release() -> None:
         db.release(agent_id, _HOST)
 
 
-def start(kind: str, name: str | None = None) -> int | None:
+def start(kind: str, name: str | None = None, *, agent_id: int | None = None,
+          host_pid: int | None = None) -> int | None:
     """认领身份并注册退出清理；返回 agent id（不进入事件循环，测试用）。
 
     一个对话一个身份时（见 _per_thread）这里还不认领，返回 None；Codex 桌面版、dsh 先把以前的对话身份接上（db.adopt）。
     """
-    global _KIND, _NAME, _HOST, _HOST_TAG, _ME, _THREAD
+    global _KIND, _NAME, _HOST, _HOST_TAG, _ME, _THREAD, _MANAGED
+    if agent_id is not None or host_pid is not None:
+        if kind != "agy" or name is not None or agent_id is None or host_pid is None or agent_id <= 0 or host_pid <= 0:
+            raise ValueError("--agent-id 和 --host-pid 必须一起用于 --kind agy，不能与 --name 混用")
     if kind == "nextchat" and name is None:
         # NextChat 的 MCP 进程在 NextChat 自己的启动目录里运行，这个目录跟着启动方式变（开始菜单、开发模式……），
         # 按目录取名每次可能都不一样。它也不告诉我们是哪个对话，所以所有对话共用一个固定的名字。
         name = "nextchat"
-    db.init_db()
-    try:
-        db.purge_stale()  # 顺手清理很久不用、又没有消息的旧身份；失败不影响启动
-    except Exception:
-        pass
+    if kind != "agy":
+        db.init_db()
+        try:
+            db.purge_stale()  # 短暂启动的全局 agy MCP 不应触发任何身份清理。
+        except Exception:
+            pass
     _KIND, _NAME, _ME, _THREAD = kind, name, None, None
     _BY_THREAD.clear()
     _TITLES.clear()
+    _MISMATCHES.clear()
     _HOST = db.host_pid()  # agent 本身的进程：同一个 agent 开的多个 MCP 进程共用一个身份
     _HOST_TAG = None
+    _MANAGED = agent_id is not None
+    if _MANAGED:
+        db.claim_acp(agent_id, host_pid)
+        _ME, _HOST, _HOST_TAG = agent_id, host_pid, "agy-acp"
+        return _ME
     if kind == "codex":
         from .wake.codex import hosted_by_daemon, hosted_by_desktop
         if hosted_by_desktop(_HOST):
@@ -237,6 +270,8 @@ def start(kind: str, name: str | None = None) -> int | None:
     elif kind == "dsh":
         _HOST_TAG = "dsh"  # dsh 开着就能叫醒它的任何会话（插件用 sessionController.prompt 发进去）
     atexit.register(_release)
+    if kind == "agy":
+        return None  # 首次工具调用才建库/认领；同名全局实例被 ACP 顶替时没有身份副作用。
     if _per_thread():
         if _HOST_TAG in ("codex-desktop", "dsh"):  # daemon 托管的不接：要看命令行窗口开没开
             db.adopt(kind, _HOST_TAG, _HOST)
@@ -245,7 +280,8 @@ def start(kind: str, name: str | None = None) -> int | None:
     return _ME
 
 
-def run(kind: str, name: str | None = None) -> None:
+def run(kind: str, name: str | None = None, *, agent_id: int | None = None,
+        host_pid: int | None = None) -> None:
     """MCP 进程入口：认领身份 → stdio 事件循环。"""
-    start(kind, name)
+    start(kind, name, agent_id=agent_id, host_pid=host_pid)
     mcp.run()  # 默认 stdio

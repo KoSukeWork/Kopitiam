@@ -118,9 +118,17 @@ class Client:
         error = ACPError("ACP process exited")
         try:
             for line in self.tree.process.stdout:
-                message = json.loads(line)
-                if not isinstance(message, dict):
-                    raise ValueError("JSON-RPC message must be an object")
+                try:
+                    message = json.loads(line)
+                    if not isinstance(message, dict):
+                        raise ValueError("JSON-RPC message must be an object")
+                except (ValueError, UnicodeError):
+                    # Some versions print diagnostics to stdout. Keep other sessions
+                    # alive, and preserve a bounded diagnostic beside backend stderr.
+                    diagnostic = line[:1000].decode("utf-8", errors="replace").rstrip()
+                    self._stderr.write(("[kopitiam: ignored stdout] " + diagnostic + "\n").encode("utf-8"))
+                    self._stderr.flush()
+                    continue
                 if "method" not in message:
                     with self._lock:
                         future = self._pending.get(message.get("id"))

@@ -172,7 +172,7 @@ def test_migration_preserves_legacy_messages(agents):
         c.execute("UPDATE meta SET value='10' WHERE key='schema_version'")
     db.init_db()
     db.init_db()
-    assert db.get_meta("schema_version") == "11"
+    assert db.get_meta("schema_version") == db.SCHEMA_VERSION
     assert last()["group_id"] is None and last()["to_all"] is None
     assert "legacy" in db.Chat().read(b)
 
