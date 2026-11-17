@@ -163,6 +163,20 @@ def test_managed_session_creation_and_web_restart(home, runtime):
         second.close()
 
 
+def test_runtime_permission_policy_reads_current_database_value(home, runtime):
+    record = runtime.create(str(home), policy="all")
+    host, sid = runtime._sessions[record["id"]]
+    assert runtime.wake(record["id"], "permission").result(5)["stopReason"] == "end_turn"
+    assert not host.snapshot()[sid]["permissions"]
+    assert "'optionId': 'once'" in str(host.sessions[sid].activity.snapshot())
+    with db._conn() as c:
+        c.execute("UPDATE acp_sessions SET policy='workspace' WHERE agent_id=?", (record["id"],))
+    pending = runtime.wake(record["id"], "permission")
+    permission(host, sid)
+    host.cancel(sid)
+    assert pending.result(5)["stopReason"] == "cancelled"
+
+
 def test_mcp_launch_parameters_bind_home_and_web_identity(home):
     definition = managed.mcp_server(42)
     assert definition["name"] == "kopitiam"

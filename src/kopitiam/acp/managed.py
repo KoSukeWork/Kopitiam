@@ -11,6 +11,7 @@ from pathlib import Path
 from .. import db
 from ..config import data_dir, norm
 from .host import Host
+from .policy import artifact_directory, decide
 
 _runtimes = {}
 _registry_lock = threading.RLock()
@@ -96,6 +97,7 @@ class Runtime:
             if backend not in self._hosts:
                 host = self.host_factory(backend)
                 host.before_resume = host.before_prompt = self._check_presence
+                host.permission_policy = self._permission
                 self._hosts[backend] = host
             return self._hosts[backend]
 
@@ -103,6 +105,17 @@ class Runtime:
     def _check_presence(session):
         if presence_locked(session.session_id):
             raise ValueError("这个对话在终端里开着，先在终端退出")
+
+    def _permission(self, session, params):
+        with self._lock:
+            agent_id = next((ident for ident, (_, sid) in self._sessions.items()
+                             if sid == session.session_id), None)
+        row = db.get_acp(agent_id) if agent_id is not None else None
+        if row is None:
+            return None
+        return decide(session, params, policy=row["policy"],
+                      extra_dirs=json.loads(row["options"]).get("extra_dirs", []),
+                      artifacts=artifact_directory(session.session_id))
 
     def _register(self, row):
         if row["archived_at"] or row["trashed_at"]:
