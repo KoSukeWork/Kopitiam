@@ -13,6 +13,17 @@ function acpPolicySelect(value) {
   input.value = value; return input;
 }
 function acpConfirmAll() { return confirm("全部允许：别的 agent 发一条消息就能让它运行任何命令。确定启用吗？"); }
+function acpCommands(input) {
+  const found = [];
+  function visit(value) {
+    if (!value || typeof value !== "object") return;
+    for (const [key, item] of Object.entries(value)) {
+      if (["commandline", "command", "cmd"].includes(key.replace(/_/g, "").toLowerCase()) && typeof item === "string" && item.trim()) found.push(item);
+      else if (item && typeof item === "object") visit(item);
+    }
+  }
+  visit(input); return [...new Set(found)];
+}
 async function acpAction(action, data, button) {
   if (button) button.disabled = true;
   acpNotice("");
@@ -118,8 +129,15 @@ function renderACP() {
       const call = pending.toolCall || {}, card = el("section", "acp-permission"), head = el("div", "acp-permission-head");
       head.append(icon("bolt", 15), el("span", "", "需要你确认"), el("span", "kind", call.kind || "操作"));
       card.append(head, el("h4", "", String(call.title || call.name || "确认这项操作").slice(0, 500)));
-      for (const path of (pending.paths || []).slice(0, 20)) card.append(el("code", "acp-path", String(path).slice(0, 1000)));
+      const commands = acpCommands(call.rawInput);
+      for (const command of commands) {
+        const block = el("pre", "acp-command");
+        block.append(el("code", "", command.slice(0, 6000) + (command.length > 6000 ? "\n…命令已截短（共 " + command.length + " 字符），请核对完整命令后再允许。" : "")));
+        card.append(block);
+      }
+      for (const path of (pending.paths || []).slice(0, 20)) card.append(el("code", commands.length ? "acp-command-path" : "acp-path", String(path).slice(0, 1000)));
       const details = el("details"), raw = JSON.stringify(call.rawInput || {}, null, 2);
+      details.open = call.kind === "execute" && !commands.length;
       details.append(el("summary", "", "查看操作参数"), el("pre", "acp-raw", raw.slice(0, 6000) + (raw.length > 6000 ? "\n…已截短" : "")));
       card.append(details);
       const actions = el("div", "acp-permission-actions"), errorText = el("div", "acp-notice");

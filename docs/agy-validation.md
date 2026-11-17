@@ -53,6 +53,11 @@ themes, 390 px mobile width, the creation dialog, permission approval, and activ
 rendering were checked with no JavaScript errors or horizontal overflow. Screenshots
 are in `docs/images/agy-*.png`.
 
+Permission-card browser assertions additionally check case/underscore-insensitive
+command fields, nested arguments, literal HTML-like command text, marked truncation,
+expanded parameters when an execute request has no command, and prominent file
+paths for file requests. Commands appear above the secondary working-directory path.
+
 ## Limits of the validation
 
 - A truly logged-out real agent could not be isolated without changing credentials.
