@@ -44,4 +44,7 @@ def home(monkeypatch):
     monkeypatch.setenv("KOPITIAM_HOME", str(root))
     yield root
     monkeypatch.delenv("KOPITIAM_HOME", raising=False)
+    # monkeypatch.chdir(home) 要等这里删完才还原；Windows 删不掉当前目录，会留下空目录
+    if Path.cwd().is_relative_to(root):
+        os.chdir(tempfile.gettempdir())
     shutil.rmtree(root, ignore_errors=True)
