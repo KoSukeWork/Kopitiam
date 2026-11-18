@@ -37,8 +37,9 @@ def get(server, path):
     return status, json.loads(raw)
 
 
-@pytest.mark.parametrize("method,path", [("GET", "/api/acp"), ("GET", "/api/acp/activity"),
-    *[("POST", "/api/acp/" + action) for action in ("sessions", "permission", "policy", "cancel", "handoff", "takeback", "retry")]])
+@pytest.mark.parametrize("method,path", [("GET", "/api/acp"), ("GET", "/api/acp/activity"), ("GET", "/api/acp/folders"),
+    *[("POST", "/api/acp/" + action) for action in ("sessions", "permission", "policy", "cancel", "handoff", "takeback", "retry",
+                                                    "pick-folder")]])
 def test_acp_endpoints_require_token(server, method, path):
     srv, _ = server
     status, _ = _get(_base(srv) + path) if method == "GET" else _post(_base(srv) + path, b"{}")
@@ -148,3 +149,57 @@ def test_retry_resumes_reapplies_options_and_only_rearms_detector(server, home, 
     failed_id = db.create_acp(str(home))
     runtime.errors[failed_id] = "creation failed"
     assert post(server, "/api/acp/retry", {"agent": db.get_acp(failed_id)["name"]})[0] == 400
+
+
+def test_folder_suggestions_list_existing_project_dirs(server, home, monkeypatch):
+    from kopitiam.acp import folders
+    old, new, gone = home / "old-project", home / "new-project", home / "deleted-project"
+    old.mkdir()
+    new.mkdir()
+    monkeypatch.setattr(folders.os.path, "expanduser", lambda p: str(home))  # 家目录本身不算项目
+    with db._conn() as c:
+        for name, path, seen in (("a", old, "2026-11-01T00:00:00"), ("b", new, "2026-11-02T00:00:00"),
+                                 ("c", gone, "2026-11-03T00:00:00"), ("d", home, "2026-11-04T00:00:00")):
+            c.execute("INSERT INTO agents(name, kind, cwd, launch_cwd, last_read, created_at, last_seen)"
+                      " VALUES(?, 'claude', ?, ?, 0, ?, ?)", (name, str(path), str(path), seen, seen))
+        c.execute("INSERT INTO agents(name, kind, cwd, launch_cwd, last_read, created_at, last_seen, trashed_at)"
+                  " VALUES('e', 'codex', ?, ?, 0, 'x', '2026-11-05T00:00:00', 'x')", (str(old), str(old)))
+    status, result = get(server, "/api/acp/folders")
+    # 最近用过的在前；不存在的、家目录、回收站里的身份都不列；同一个文件夹只列一次
+    assert status == 200 and result["folders"] == [str(new), str(old)]
+
+
+def test_pick_folder_returns_choice_without_runtime(server, home, monkeypatch):
+    from kopitiam.acp import folders
+    seen = []
+    monkeypatch.setattr(folders, "run_picker", lambda initial: seen.append(initial) or "C:/Projects/shop-web")
+    server[0].acp.close()  # 选文件夹不依赖 ACP 托管
+    status, result = post(server, "/api/acp/pick-folder", {"initial": r"  C:\Projects  "})
+    assert status == 200 and result["path"] == r"C:\Projects\shop-web" and seen == [r"C:\Projects"]
+    monkeypatch.setattr(folders, "run_picker", lambda initial: "")  # 用户点了取消
+    assert post(server, "/api/acp/pick-folder", {})[1] == {"ok": True, "path": ""}
+
+
+def test_only_one_folder_picker_at_a_time(server, monkeypatch):
+    from kopitiam.acp import folders
+    opened, release = threading.Event(), threading.Event()
+    def slow(initial):
+        opened.set()
+        assert release.wait(10)
+        return "C:/Projects/a"
+    monkeypatch.setattr(folders, "run_picker", slow)
+    first = threading.Thread(target=post, args=(server, "/api/acp/pick-folder", {}))
+    first.start()
+    try:
+        assert opened.wait(5)
+        status, result = post(server, "/api/acp/pick-folder", {})
+        assert status == 400 and "已经开着" in result["message"]
+    finally:
+        release.set()
+        first.join(10)
+    assert post(server, "/api/acp/pick-folder", {})[1]["path"] == r"C:\Projects\a"
+
+
+def test_picker_script_compiles():
+    from kopitiam.acp import folders
+    compile(folders.PICK_SCRIPT, "<pick-folder>", "exec")

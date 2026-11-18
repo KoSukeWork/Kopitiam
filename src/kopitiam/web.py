@@ -246,12 +246,14 @@ class _Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/":
             return self._send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
-        if u.path in ("/api/acp", "/api/acp/activity"):
+        if u.path in ("/api/acp", "/api/acp/activity", "/api/acp/folders"):
             if not self._token_header_ok():
                 return self._deny()
             try:
                 if u.path == "/api/acp":
                     return self._json(acp_web.state(self.server))
+                if u.path == "/api/acp/folders":
+                    return self._json({"folders": acp_web.folders.known()})
                 query = parse_qs(u.query)
                 after = int(query.get("after", ["0"])[0])
                 if after < 0:

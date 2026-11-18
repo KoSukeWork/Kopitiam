@@ -182,7 +182,7 @@ startup_timeout_sec = 30
 
 ### agy（Antigravity CLI）
 
-**网页托管（能自动唤醒）**：先安装并在终端登录一次 [Antigravity CLI](https://antigravity.google/docs/cli/)，再运行 `kopitiam web`。左栏点「＋ agy 会话」，填已有的工作目录、可选名字、模型、思考档位和第一条任务。第一条任务会以你的身份进入聊天记录；之后像给其他 agent 发消息一样派活，也能把它拉进群里。
+**网页托管（能自动唤醒）**：先安装并在终端登录一次 [Antigravity CLI](https://antigravity.google/docs/cli/)，再运行 `kopitiam web`。左栏点「＋ agy 会话」，填已有的工作目录、可选名字、模型、思考档位和第一条任务。工作目录可以直接粘贴；点输入框会列出其他 agent 用过的项目文件夹；点「浏览…」会在这台电脑上弹出 Windows 的选择文件夹窗口（浏览器拿不到文件夹的完整路径，所以由 `kopitiam web` 来弹；没出现在最前面时看一下任务栏）。第一条任务会以你的身份进入聊天记录；之后像给其他 agent 发消息一样派活，也能把它拉进群里。
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/agy-dark.png">

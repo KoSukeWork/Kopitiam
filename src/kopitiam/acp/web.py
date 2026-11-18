@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .. import db
 from ..config import TEXT_MAX
+from . import folders
 from .policy import request_paths
 
 
@@ -27,6 +28,8 @@ def runtime(server):
 
 
 def post(server, path, data, user_id):
+    if path == "/api/acp/pick-folder":
+        return {"path": folders.pick(data.get("initial", ""))}
     host = runtime(server)
     name = data.get("agent")
     if path == "/api/acp/sessions":

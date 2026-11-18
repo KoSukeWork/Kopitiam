@@ -52,6 +52,9 @@
 .acp-fields { display:grid; grid-template-columns:1fr 1fr; gap:13px 12px; }
 .acp-field { display:flex; flex-direction:column; gap:6px; font-size:12px; color:var(--ink-2); min-width:0; }
 .acp-field.wide { grid-column:1 / -1; }
+.acp-cwd-row { display:flex; gap:8px; min-width:0; }
+.acp-cwd-row .tin { flex:1; }
+.acp-cwd-row .btn { flex-shrink:0; white-space:nowrap; }
 .acp-field .tin { width:100%; min-width:0; box-sizing:border-box; font-size:13px; }
 .acp-field textarea { resize:vertical; min-height:100px; line-height:1.7; }
 .acp-submit { display:flex; align-items:center; justify-content:flex-end; gap:10px; margin-top:19px; }

@@ -44,7 +44,25 @@ function openAgySession() {
     const wrap = el("label", "acp-field" + (wide ? " wide" : ""));
     wrap.append(el("span", "", label), input); fields.append(wrap); return input;
   }
-  const cwd = field("工作目录", el("input", "tin"), true); cwd.required = true; cwd.placeholder = "C:\\Projects\\shop-web";
+  // 浏览器拿不到文件夹的完整路径：「浏览…」请 kopitiam web 在本机弹出选择窗口；下拉里是其他 agent 用过的项目文件夹
+  const cwdRow = field("工作目录", el("div", "acp-cwd-row"), true);
+  const cwd = el("input", "tin"); cwd.required = true; cwd.placeholder = "C:\\Projects\\shop-web";
+  const known = el("datalist"); known.id = "acpFolders"; cwd.setAttribute("list", known.id);
+  const browse = el("button", "btn", "浏览…"); browse.type = "button";
+  browse.title = "在这台电脑上弹出选择文件夹的窗口";
+  cwdRow.append(cwd, browse, known);
+  api("/api/acp/folders").then(r => {
+    for (const path of (r && r.folders) || []) { const option = el("option"); option.value = path; known.append(option); }
+  }).catch(() => {});
+  browse.onclick = async () => {
+    browse.disabled = true; browse.textContent = "请在弹出的窗口里选择…"; status.textContent = "";
+    try {
+      const result = await post("/api/acp/pick-folder", {initial: cwd.value.trim()});
+      if (!result.ok) throw new Error(result.message || "没能打开选择窗口，请直接填写路径");
+      if (result.path) { cwd.value = result.path; cwd.focus(); }
+    } catch (error) { status.textContent = error.message; }
+    finally { browse.disabled = false; browse.textContent = "浏览…"; }
+  };
   const name = field("名字（可选）", el("input", "tin")); name.placeholder = "按项目名称自动取名"; name.maxLength = 32;
   const policy = field("权限", acpPolicySelect("workspace"));
   policy.onchange = () => { if (policy.value === "all" && !acpConfirmAll()) policy.value = "workspace"; };
