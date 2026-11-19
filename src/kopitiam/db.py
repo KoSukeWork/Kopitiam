@@ -39,7 +39,8 @@ from .config import (
     valid_name,
 )
 
-SCHEMA_VERSION = "12"  # 12：ACP 托管会话；11：群聊
+# 12：曾用于 agy 托管（acp_sessions 表），已撤回；版本号不回退，免得 12 版做的备份恢复时被当成「更新版本」拒绝
+SCHEMA_VERSION = "12"  # 12：撤回 agy 托管；11：群聊；10：wake_state.user_at
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -113,15 +114,6 @@ CREATE TABLE IF NOT EXISTS group_events(
   agent_id INTEGER REFERENCES agents(id),
   detail TEXT);
 CREATE TABLE IF NOT EXISTS group_seen(group_id INTEGER PRIMARY KEY REFERENCES groups(id), upto INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS acp_sessions(
-  agent_id INTEGER PRIMARY KEY REFERENCES agents(id),
-  backend TEXT NOT NULL,
-  session_id TEXT,
-  cwd TEXT NOT NULL,
-  policy TEXT NOT NULL DEFAULT 'workspace',
-  options TEXT NOT NULL DEFAULT '{}',
-  handed_off TEXT,
-  created_at TEXT NOT NULL);
 """
 # peers：配对过的别人的电脑。name = 对方自报的名字；address = 对方团队端口 host:port；
 #   secret = 配对时生成的共享密钥（HMAC 签名用）；agent_id = 本机为这个人建的身份（kind='remote'）。
@@ -199,6 +191,8 @@ def init_db() -> None:
                         if "duplicate column" not in str(e):
                             raise
             c.execute("CREATE UNIQUE INDEX IF NOT EXISTS messages_remote_uid ON messages(remote_uid)")
+            # 撤回的 agy 托管留下的表：它的外键会挡住永久删除那些 agy 身份，里面也没有别的用处
+            c.execute("DROP TABLE IF EXISTS acp_sessions")
             c.execute("CREATE INDEX IF NOT EXISTS messages_group ON messages(group_id, id)")
             c.execute(
                 "INSERT INTO meta(key, value) VALUES('schema_version', ?)"
@@ -347,7 +341,7 @@ def _same_dir(a, b) -> bool:
 
 def _usable(row, pid: int) -> bool:
     # 团队里别人的身份（kind=remote）不能被本机 agent 认领，当作名字已占用
-    return row["kind"] != "remote" and row["host"] != "agy-acp" and (not is_online(row) or _same_host(row, pid))
+    return row["kind"] != "remote" and (not is_online(row) or _same_host(row, pid))
 
 
 def _drop_spare_names(c, name: str, keep: int) -> None:
@@ -358,7 +352,7 @@ def _drop_spare_names(c, name: str, keep: int) -> None:
         if not r["name"].lower().startswith(name.lower() + "-"):
             continue
         suffix = r["name"][len(name) + 1:]
-        if suffix.isdigit() and r["kind"] != "remote" and r["host"] != "agy-acp" and not counts.get(r["id"]) and not _has_group_links(c, r["id"]) and not is_online(r):
+        if suffix.isdigit() and r["kind"] != "remote" and not counts.get(r["id"]) and not _has_group_links(c, r["id"]) and not is_online(r):
             c.execute("DELETE FROM agents WHERE id=?", (r["id"],))
 
 
@@ -508,7 +502,7 @@ def claim_thread(kind: str, thread_id: str, cwd: str, *, pid: int | None = None,
     with _conn() as c:
         c.execute("BEGIN IMMEDIATE")
         try:
-            row = c.execute("SELECT * FROM agents WHERE kind=? AND thread_id=? AND COALESCE(host, '')<>'agy-acp' ORDER BY last_seen DESC",
+            row = c.execute("SELECT * FROM agents WHERE kind=? AND thread_id=? ORDER BY last_seen DESC",
                             (kind, thread_id)).fetchone()
             if row is not None:
                 # 工作目录跟着对话（以前共用一个身份时记的是别的对话的目录）
@@ -523,7 +517,7 @@ def claim_thread(kind: str, thread_id: str, cwd: str, *, pid: int | None = None,
             while True:
                 nm = base if i == 1 else f"{base}-{i}"
                 old = c.execute("SELECT * FROM agents WHERE name = ?", (nm,)).fetchone()
-                if old is not None and old["kind"] == kind and old["host"] != "agy-acp" and old["thread_id"] is None and not is_online(old):
+                if old is not None and old["kind"] == kind and old["thread_id"] is None and not is_online(old):
                     if counts.get(old["id"]) or _has_group_links(c, old["id"]):
                         c.execute(
                             "UPDATE agents SET thread_id=?, cwd=?, pid=?, pid_ctime=?, last_seen=?, host=?, archived_at=NULL,"
@@ -570,105 +564,6 @@ def adopt(kind: str, host: str, pid: int | None = None) -> int:
             c.execute("ROLLBACK")
             raise
     return n
-
-
-_ACP_SELECT = ("SELECT a.*, s.backend, s.session_id, s.cwd AS session_cwd, s.policy, s.options,"
-               " s.handed_off FROM acp_sessions s JOIN agents a ON a.id=s.agent_id")
-
-
-def get_acp(agent_id: int):
-    with _conn() as c:
-        row = c.execute(_ACP_SELECT + " WHERE a.id=?", (agent_id,)).fetchone()
-        return dict(row) if row else None
-
-
-def list_acp() -> list[dict]:
-    with _conn() as c:
-        return [dict(row) for row in c.execute(_ACP_SELECT + " ORDER BY a.id")]
-
-
-def create_acp(cwd: str, *, backend: str = "agy", name: str | None = None,
-               policy: str = "workspace", options: dict | None = None, pid: int | None = None) -> int:
-    if backend != "agy" or policy not in ("workspace", "all"):
-        raise ValueError("不支持的 ACP 后端或权限模式")
-    path = Path(cwd).resolve()
-    if not path.is_dir():
-        raise ValueError("工作目录必须是已存在的文件夹")
-    if name is not None:
-        _check_name(name)
-    base = name or re.sub(r"[^\w.@-]", "_", f"agy@{path.name or 'root'}")[:32]
-    pid = os.getpid() if pid is None else pid
-    init_db()
-    with _conn() as c:
-        c.execute("BEGIN IMMEDIATE")
-        try:
-            candidate, number = base, 2
-            while _name_taken(c, candidate):
-                suffix = f"-{number}"
-                candidate = base[:32 - len(suffix)] + suffix
-                number += 1
-            agent_id = _insert_agent(c, name=candidate, kind="agy", cwd=str(path), launch_cwd=str(path),
-                                     pid=pid, pid_ctime=_pid_ctime(pid), host="agy-acp")
-            c.execute("INSERT INTO acp_sessions(agent_id,backend,cwd,policy,options,created_at) VALUES(?,?,?,?,?,?)",
-                      (agent_id, backend, str(path), policy, json.dumps(options or {}), now_iso()))
-            # A newly created managed session must receive its first task even if
-            # the wake detector has not seen this identity yet.
-            c.execute("INSERT INTO wake_state(agent_id,seen_upto) SELECT id,last_read FROM agents WHERE id=?", (agent_id,))
-            c.execute("COMMIT")
-            return agent_id
-        except BaseException:
-            c.execute("ROLLBACK")
-            raise
-
-
-def bind_acp(agent_id: int, session_id: str) -> None:
-    with _conn() as c:
-        c.execute("BEGIN IMMEDIATE")
-        try:
-            changed = c.execute("UPDATE acp_sessions SET session_id=? WHERE agent_id=?", (session_id, agent_id))
-            if not changed.rowcount:
-                raise LookupError("托管身份已不存在")
-            c.execute("UPDATE agents SET thread_id=? WHERE id=?", (session_id, agent_id))
-            c.execute("COMMIT")
-        except BaseException:
-            c.execute("ROLLBACK")
-            raise
-
-
-def claim_acp(agent_id: int, pid: int) -> None:
-    """Only the preallocated managed row may be used by --agent-id."""
-    init_db()
-    with _conn() as c:
-        c.execute("BEGIN IMMEDIATE")
-        try:
-            row = c.execute(_ACP_SELECT + " WHERE a.id=?", (agent_id,)).fetchone()
-            if not row or row["kind"] != "agy" or row["host"] != "agy-acp" or row["handed_off"]:
-                raise ValueError("--agent-id 必须指向未交给终端的 agy-acp 托管身份")
-            c.execute("UPDATE agents SET pid=?,pid_ctime=? WHERE id=?", (pid, _pid_ctime(pid), agent_id))
-            c.execute("COMMIT")
-        except BaseException:
-            c.execute("ROLLBACK")
-            raise
-
-
-def adopt_acp(pid: int | None = None) -> list[int]:
-    """Adopt all eligible managed identities without the ordinary activity cutoff."""
-    pid = os.getpid() if pid is None else pid
-    owned = []
-    with _conn() as c:
-        c.execute("BEGIN IMMEDIATE")
-        try:
-            rows = c.execute(_ACP_SELECT + " WHERE a.kind='agy' AND a.host='agy-acp'"
-                             " AND a.archived_at IS NULL AND a.trashed_at IS NULL AND s.handed_off IS NULL").fetchall()
-            for row in rows:
-                if not is_online(row) or _same_host(row, pid):
-                    c.execute("UPDATE agents SET pid=?,pid_ctime=? WHERE id=?", (pid, _pid_ctime(pid), row["id"]))
-                    owned.append(row["id"])
-            c.execute("COMMIT")
-        except BaseException:
-            c.execute("ROLLBACK")
-            raise
-    return owned
 
 
 def set_title(agent_id: int, title: str) -> None:
@@ -739,11 +634,6 @@ def _has_group_links(c, agent_id: int) -> bool:
 
 
 def _delete_identity(c, agent_id: int) -> None:
-    if c.execute("SELECT 1 FROM acp_sessions WHERE agent_id=?", (agent_id,)).fetchone():
-        from .acp.managed import close_agent
-        row = c.execute("SELECT * FROM agents WHERE id=?", (agent_id,)).fetchone()
-        close_agent(agent_id, row)
-        c.execute("DELETE FROM acp_sessions WHERE agent_id=?", (agent_id,))
     c.execute("DELETE FROM group_members WHERE agent_id=?", (agent_id,))
     c.execute("UPDATE group_members SET added_by=NULL WHERE added_by=?", (agent_id,))
     # NOTE: 保留群事件的时间线，把永久删除的身份引用置空；网页显示为「已删除的成员」。
@@ -811,7 +701,7 @@ def purge_stale() -> int:
             gone = [r["id"] for r in rows
                     if not counts.get(r["id"]) and not _has_group_links(c, r["id"]) and r["id"] not in paired and not is_online(r)]
             for i in gone:
-                _delete_identity(c, i)
+                c.execute("DELETE FROM agents WHERE id=?", (i,))
             # 回收站到期：在线也删（还在用的话，它一调用工具就已经自己恢复了）
             trashed = [r[0] for r in c.execute(
                 "SELECT id FROM agents WHERE trashed_at IS NOT NULL AND trashed_at < ?"
@@ -1525,10 +1415,8 @@ class Chat:
     def switch_options(self, me: int) -> str:
         with _conn() as c:
             me_row = self._me(c, me)
-            if me_row["host"] == "agy-acp":
-                return "托管会话使用网页指定的身份，不能切换；可以用 rename 改名。"
             rows = [r for r in c.execute("SELECT * FROM agents WHERE kind=? AND id<>? ORDER BY id",
-                                         (me_row["kind"], me)) if r["host"] != "agy-acp" and _same_dir(r, me_row)]
+                                         (me_row["kind"], me)) if _same_dir(r, me_row)]
             counts = _message_counts(c)
         if not rows:
             return f"你是 {me_row['name']}。同一个文件夹里没有别的 {me_row['kind']} 身份。"
@@ -1560,8 +1448,6 @@ class Chat:
             try:
                 me_row = self._me(c, me)
                 t = c.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
-                if me_row["host"] == "agy-acp" or (t is not None and t["host"] == "agy-acp"):
-                    raise _Fail("错误：托管会话的身份不能切换")
                 if t is None:
                     raise _Fail(f'错误：找不到 "{name}"')
                 if t["id"] == me:
@@ -1627,12 +1513,7 @@ class Chat:
             except BaseException:
                 c.execute("ROLLBACK")
                 raise
-        if kind == "agy" and thread and not session_file:
-            from .export import agy as found_in
-            found = found_in.find_by_thread(thread)
-            if found:
-                session_file = str(found)
-        elif kind in ("codex", "dsh") and thread and not session_file:
+        if kind in ("codex", "dsh") and thread and not session_file:
             # 记下了正在用 kopitiam 的对话：直接用它的记录文件，不用按工作目录猜（也就不用先 set_cwd）
             if kind == "codex":
                 from .export import codex as found_in

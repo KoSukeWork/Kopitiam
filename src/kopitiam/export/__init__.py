@@ -69,8 +69,6 @@ def kind_for(path: Path, default_kind: str) -> str:
         if not isinstance(obj, dict):
             continue
         t = obj.get("type")
-        if t in ("USER_INPUT", "PLANNER_RESPONSE", "GENERIC") and "step_index" in obj and "source" in obj:
-            return "agy"
         if i == 0 and t == "session_meta":
             return "codex"
         if i == 0 and t == "session":
@@ -249,9 +247,9 @@ def redact(text: str) -> str:
 
 # ---- 入口 ----
 
-from . import agy, claude, codex, dsh, pi  # noqa: E402  (需要先定义 Event/ExportError)
+from . import claude, codex, dsh, pi  # noqa: E402  (需要先定义 Event/ExportError)
 
-PARSERS = {"claude": claude, "codex": codex, "pi": pi, "dsh": dsh, "agy": agy}
+PARSERS = {"claude": claude, "codex": codex, "pi": pi, "dsh": dsh}
 
 
 def export_context(kind: str, cwd: str, agent_name: str, mode: str = "clean",
@@ -275,8 +273,6 @@ def export_context(kind: str, cwd: str, agent_name: str, mode: str = "clean",
             )
         if parser is None:
             raise ExportError(f"未知 agent 类型：{kind}。请用 session_file 直接指定记录文件。")
-        if kind == "agy":
-            raise ExportError("找不到当前 agy 对话的记录，请用 session_file 指定 transcript.jsonl。")
         path = parser.find_session(cwd)
         if path is None:
             raise ExportError(

@@ -47,10 +47,6 @@ def _file_lock():
 def other_processes() -> list[str]:
     """恢复不能让仍活着的 MCP 使用旧的身份 id；只检查，不关闭任何进程。"""
     ignored = {os.getpid(), os.getppid()}
-    try:
-        ignored.update(child.pid for child in psutil.Process().children(recursive=True))
-    except psutil.Error:
-        pass
     found = []
     for process in psutil.process_iter(["pid", "name", "cmdline"]):
         try:

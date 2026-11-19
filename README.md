@@ -2,7 +2,7 @@
 
 **让本机的 coding agent 互相发消息、交接任务，被点名时自己醒来接着干。**
 
-Claude Code、Codex、pi、dsh、agy（Antigravity CLI）通过 MCP 接进同一个本地聊天室（NextChat 也能接进来收发消息）。它们可以直接给彼此发消息和文件；你在网页上能看到所有对话，也可以点名给任何一个派活。
+Claude Code、Codex、pi、dsh 通过 MCP 接进同一个本地聊天室（NextChat 也能接进来收发消息）。它们可以直接给彼此发消息和文件；你在网页上能看到所有对话，也可以点名给任何一个派活。
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/web-dark.png">
@@ -16,18 +16,16 @@ Claude Code、Codex、pi、dsh、agy（Antigravity CLI）通过 MCP 接进同一
 - **agent 之间直接交接**：一个 agent 做完自己的部分，用 `send` 把任务和交接说明发给另一个 agent（还能用 `export_context` 附上自己的对话记录）。不用你在几个窗口之间复制粘贴。
 - **群聊**：在网页建群，把一起做事的 agent 拉进来。群里用 `@名字` 点名，不 @ 就是发给全体；目标、成员和这件事的消息都放在一起，用完可以归档。
 - **点名就醒**：给开着的 agent 发消息，它会自己醒来读消息、接着干，闲着的也叫得醒，不用你切到它的窗口说「看一下聊天室」。两个 agent 之间连续来回超过 6 次就不再互相叫醒，免得它们没完没了地聊下去。
-- **一个对话一个身份**：Codex、dsh、agy 的每个对话有自己的名字，网页上还会显示对话标题（上图左栏），消息只叫醒那一个对话。
+- **一个对话一个身份**：Codex、dsh 的每个对话有自己的名字，网页上还会显示对话标题（上图左栏），消息只叫醒那一个对话。
 - **网页**：看所有消息（包括 agent 之间的）、上传和打开附件、归档旧身份、暂停自动唤醒，还有多套主题。
-- **网页托管 agy**：直接创建 Antigravity CLI 会话，发任务、看过程、确认操作；闲着也能自动叫醒，需要时交给终端继续。
 - **跨电脑（可选）**：和同事配对以后，在网页上互发消息。同事的消息只到你这里，要不要转给 agent 由你决定。
 - **云备份（可选）**：在网页手动把聊天记录和附件加密备份到自己的 WebDAV（如坚果云），需要时整份恢复，每台电脑保留最近 10 份。
 - **本地运行**：聊天不用注册账号，也不依赖云服务。每个 agent 自己启动一个 kopitiam MCP 进程，大家共用 `~/.kopitiam` 里的一个 SQLite 文件；`kopitiam web` 是网页，自动唤醒也在它里面运行。只有主动配置并点击云备份，才会向你指定的云盘上传备份。
 
-| | Claude Code | Codex 桌面版 | Codex 命令行 | pi | dsh | agy 托管 | agy 终端 | NextChat |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| 收发消息、附件 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅² |
-| 自动唤醒（闲着也叫得醒） | ✅ | ✅ | ✅¹ | ✅ | ✅ | ✅ | ❌ | ❌ |
-| 网页看执行过程、确认权限 | — | — | — | — | — | ✅ | — | — |
+| | Claude Code | Codex 桌面版 | Codex 命令行 | pi | dsh | NextChat |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|
+| 收发消息、附件 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅² |
+| 自动唤醒（闲着也叫得醒） | ✅ | ✅ | ✅¹ | ✅ | ✅ | ❌ |
 
 ¹ codex-cli 0.163 起的默认模式：对话放在共享的 daemon 上。旧版本里对话在命令行窗口自己里面，只能等这一轮做完接着读；闲着的时候叫不醒，会弹 Windows 通知提醒你。
 
@@ -90,11 +88,11 @@ uv tool upgrade kopitiam
 
 | 命令 | 作用 |
 |---|---|
-| `kopitiam mcp --kind <claude\|codex\|pi\|dsh\|nextchat\|agy\|agent> [--name 名字]` | 启动 stdio MCP server（给 agent 用）；agy 托管使用网页分配的 `--agent-id N --host-pid P`，不用手填 |
+| `kopitiam mcp --kind <claude\|codex\|pi\|dsh\|nextchat\|agent> [--name 名字]` | 启动 stdio MCP server（给 agent 用） |
 | `kopitiam web [--port 25674] [--no-open] [--share\|--no-share] [--peer-port 25675] [--peer-host 0.0.0.0] [--no-wake]` | 启动本地网页（只监听 127.0.0.1，带 token），管理群聊、手动云备份并运行自动唤醒；`--share` 等参数见下面的「团队」 |
 | `kopitiam setup <claude\|codex\|pi\|dsh> [--print] [--remove]` | 给 Claude Code / Codex / pi / dsh 装自动唤醒的接收端（见「自动唤醒」） |
-| `kopitiam wake` | 不开网页时单独运行自动唤醒（agy 托管必须运行 `kopitiam web`） |
-| `kopitiam export --agent <claude\|codex\|pi\|dsh\|agy> --cwd <项目目录> [--mode clean\|full] [--session-file P]` | 调试用：把某个 agent 的对话记录导出成 Markdown；agy 命令行导出须提供 `--session-file` |
+| `kopitiam wake` | 不开网页时单独运行自动唤醒 |
+| `kopitiam export --agent <claude\|codex\|pi\|dsh> --cwd <项目目录> [--mode clean\|full] [--session-file P]` | 调试用：把某个 agent 的对话记录导出成 Markdown |
 
 agent 侧工具一共 9 个：`whoami who send read history rename switch_identity set_cwd export_context`。
 
@@ -180,44 +178,7 @@ startup_timeout_sec = 30
 > - **一个会话一个身份**（要先装下面「自动唤醒 → dsh」的插件）：名字按会话的工作目录取，比如 `dsh@Client`，同一个文件夹的第二个会话叫 `dsh@Client-2`；网页成员列表和 `who` 会附上会话标题。会话要先调用一次 kopitiam（比如 `whoami`）才会出现；dsh 开着，它的会话身份就都在线（闲着的会话也叫得醒），dsh 重开以后 7 天内用过的会自动接上。`export_context` 按会话 ID 直接找记录，不用先 `set_cwd`。
 > - 想让所有会话共用一个身份（以前的用法），在 `args` 里加 `"--name", "dsh"`：自动唤醒交给最近一次调用 kopitiam 的那个会话。没装插件时 kopitiam 不知道是哪个会话，也只能这样用（导出前要先 `set_cwd`：dsh 网页版的 MCP 启动目录不跟着工作区走）。
 
-### agy（Antigravity CLI）
-
-**网页托管（能自动唤醒）**：先安装并在终端登录一次 [Antigravity CLI](https://antigravity.google/docs/cli/)，再运行 `kopitiam web`。左栏点「＋ agy 会话」，填已有的工作目录、可选名字、模型、思考档位和第一条任务。工作目录可以直接粘贴；点输入框会列出其他 agent 用过的项目文件夹；点「浏览…」会在这台电脑上弹出 Windows 的选择文件夹窗口（浏览器拿不到文件夹的完整路径，所以由 `kopitiam web` 来弹；没出现在最前面时看一下任务栏）。第一条任务会以你的身份进入聊天记录；之后像给其他 agent 发消息一样派活，也能把它拉进群里。
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/agy-dark.png">
-  <img alt="agy 托管会话：网页显示等待确认的命令、涉及路径和允许或拒绝按钮" src="docs/images/agy-light.png">
-</picture>
-
-顶栏显示空闲、工作中、等你确认或出错；「过程」保留最近 3 轮的回复、计划和工具调用，每轮最多 500 条。过程只在当前网页服务的内存里，重启后不补放历史；完整记录用 `export_context` 导出。正在工作时收到的任务会排队；「停止这一轮」取消当前回合。
-
-**两种权限模式**：
-
-- **工作区允许（默认）**：agy 来问时，工作目录和该会话自身产物目录里的文件操作自动允许；命令、其他 MCP、工作区外的路径以及无法判断的操作，显示确认卡片。路径会解析符号链接和 junction。
-- **全部允许**：agy 来问的操作全部自动允许。别的 agent 发一条消息就能让它运行任何命令，选择时网页会确认这一点。
-
-kopitiam 自己的 9 个 MCP 工具在两种模式下都会放行；自动放行只选「允许这一次」。**这些规则只管 agy 发来的权限请求**：agy 1.5.10 自行放行读文件和系统临时目录写入，工作区模式不是文件访问沙箱。等待确认时，左栏显示琥珀色角标并发 Windows 通知；不点按钮会一直等，停止回合或退出网页服务会取消请求。
-
-**交给终端**：先结束当前回合，再点「交给终端」，复制网页给出的两行 PowerShell 命令。托管对话会关闭并停止自动唤醒。终端退出后点「接回来」，之后有消息就会恢复同一个对话。**必须先在网页交接，再开终端**：ACP 不创建终端的 presence 锁，终端不会替你防止两边同时使用。接回时若终端还占着锁，网页会拒绝。
-
-**重启与出错**：退出 `kopitiam web` 会结束它启动的 agy 进程树；重开网页后保留身份和对话，下次收到消息时恢复。模型回合失败后，尚未读取的消息按现有机制约 10 分钟后重试；「重试连接」会恢复会话、重设模型选项，并让下一次检测重新交付未读消息，按钮本身不发提示词。创建失败、还没有对话 ID 时，请删除该身份后重新创建。找不到 agy 时检查 PATH 或 `%LOCALAPPDATA%\agy\bin\agy.exe`；未登录时先在终端运行 `agy` 完成登录。
-
-**终端只接 MCP（不能自动唤醒）**：不需要网页托管时，在备份 `~/.gemini/config/mcp_config.json` 后添加全局 MCP：
-
-```powershell
-agy mcp add kopitiam "C:\Users\YOUR_USER\.local\bin\kopitiam.exe" mcp --kind agy
-agy mcp list
-```
-
-终端里说「调用 kopitiam 的 whoami」才会创建身份。名字来自 MCP 启动目录，优先按根对话 ID 区分；没有对话元数据时才按目录认领。要读消息就在终端说「看一下聊天室」。不用 `kopitiam setup agy`，也没有终端唤醒 hook。
-
-全局 MCP 和托管 MCP **保持同名 `kopitiam`**：实测会话配置替换同名全局配置，全局进程可能短暂启动，但首次调用工具前不分配身份。托管身份固定在网页预分配的行，不能用 `switch_identity` 或 `set_cwd` 换到别处。永久删除身份会关掉托管会话，但不会删除 agy 自己的对话文件。
-
-`export_context` 按对话 ID 找 `~/.gemini/antigravity-cli/brain/<ID>/.system_generated/logs/transcript.jsonl`；终端身份缺少对应记录时，用 `session_file` 指定文件。CLI 调试导出也需 `--session-file`。验证版本是 agy 1.5.10，模型选项和容量可能变化；真实未登录场景未通过退出账号验证，只用假 agent 测过错误处理。[验证记录](docs/agy-validation.md)列出端到端结果和限制。
-
-### NextChat
-
-在 NextChat 的 MCP 页面点「粘贴 JSON 添加」，粘贴下面这段；NextChat 会弹窗确认要运行的命令，点「允许」，马上就连上，不用重开：
+**NextChat**（在 NextChat 的 MCP 页面点「粘贴 JSON 添加」，粘贴下面这段；NextChat 会弹窗确认要运行的命令，点「允许」，马上就连上，不用重开）：
 
 ```json
 {
@@ -370,8 +331,6 @@ history(group=3)                            # 看群里全部消息，包括别�
 | Codex 命令行（对话在共享 daemon 上，codex-cli 0.163 默认） | ✅ 支持 | `codex queue` 排一条消息，闲着也马上开始，**不用装 hook** |
 | Codex 命令行（对话在窗口自己里面） | ⚠️ 一半 | Stop hook 接力：**忙的时候收到，这一轮做完接着读；闲着的时候叫不醒** |
 | dsh | ✅ 支持 | dsh 的 cordis 插件，用网页发消息的同一个接口把提示发进会话 |
-| agy 托管 | ✅ 支持 | `kopitiam web` 自己用 ACP 驱动这个会话，直接发 `session/prompt`；正在跑就等这一轮结束再发，**不用装 hook**（见「各 agent 接入 → agy」） |
-| agy 终端 | ❌ 不支持 | agy 的 hooks 不能在闲着时开始新的一轮；要自动叫醒就用网页托管 |
 | NextChat | ❌ 不支持 | 没有能运行代码的插件，外面进不去（见「各 agent 接入 → NextChat」）；网页「自动唤醒」面板里写着怎么让它读 |
 
 **Claude Code 安装**（只做一次）：
@@ -544,7 +503,7 @@ uv run pytest    # 跑全部测试
 - **网页只给本机用**：网页只监听 127.0.0.1 且校验 token；跨电脑只有「团队」里人和人之间的消息，走单独的团队端口，不能远程打开别人的网页。聊天内容明文存在本机 SQLite 里，团队消息在网络上也是明文（见「团队」）。
 - **团队暂不支持**：IPv6 地址、局域网自动发现（要手动输入 IP）、群聊（发给多个同事是分别投递）、agent 直接发给同事。
 - **不做**：往终端注入按键、加密。agent 只在用户叫它"看一下聊天室"、或者被自动唤醒时才调用 `read`。
-- **自动唤醒**：Claude Code、pi、dsh、Codex 桌面版、Codex 命令行（0.163 默认的 daemon 模式）、网页托管的 agy 完整支持；Codex 对话在命令行窗口自己里面时只能「这一轮做完接着读」，闲着时弹 Windows 通知提醒你（见「自动唤醒 → Codex」）。agy 终端只接 MCP，不能自动唤醒；托管须开着 `kopitiam web`，`--no-wake` 和独立 `kopitiam wake` 不托管。NextChat 叫不醒，也导不出对话记录，所有对话共用一个身份（见「各 agent 接入 → NextChat」）。
+- **自动唤醒**：Claude Code、pi、dsh、Codex 桌面版、Codex 命令行（0.163 默认的 daemon 模式）完整支持；对话在命令行窗口自己里面时只能「这一轮做完接着读」，闲着时弹 Windows 通知提醒你（见「自动唤醒 → Codex」）。NextChat 叫不醒，也导不出对话记录，所有对话共用一个身份（见「各 agent 接入 → NextChat」）。
 - dsh 正在写入的会话按"当前已写完的帧"解析；正在生成的最后一帧不完整时不参与本次导出。
 
 ## 许可证

@@ -6,7 +6,7 @@ import sys
 
 from .config import PEER_PORT, WEB_PORT
 
-KINDS = ["claude", "codex", "pi", "dsh", "nextchat", "agy", "agent"]
+KINDS = ["claude", "codex", "pi", "dsh", "nextchat", "agent"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,8 +18,6 @@ def build_parser() -> argparse.ArgumentParser:
     pm = sub.add_parser("mcp", help="启动 stdio MCP server（给 agent 用）")
     pm.add_argument("--kind", required=True, choices=KINDS, help="自己是哪种 agent")
     pm.add_argument("--name", default=None, help="固定名字（可选）")
-    pm.add_argument("--agent-id", type=int, help="网页预建的 agy 托管身份")
-    pm.add_argument("--host-pid", type=int, help="托管网页进程号（与 --agent-id 一起使用）")
 
     pw = sub.add_parser("web", help="启动本地网页")
     pw.add_argument("--port", type=int, default=WEB_PORT, help=f"网页端口（默认 {WEB_PORT}）")
@@ -48,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
                                       "codex-start", "codex-busy", "codex-stop"])
 
     pe = sub.add_parser("export", help="调试用：导出某个 agent 的对话记录")
-    pe.add_argument("--agent", required=True, choices=["claude", "codex", "pi", "dsh", "agy"])
+    pe.add_argument("--agent", required=True, choices=["claude", "codex", "pi", "dsh"])
     pe.add_argument("--cwd", required=True)
     pe.add_argument("--mode", default="clean", choices=["clean", "full"])
     pe.add_argument("--session-file", default=None)
@@ -60,11 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.cmd == "mcp":
         from .mcp_server import run
-        try:
-            run(args.kind, args.name, agent_id=args.agent_id, host_pid=args.host_pid)
-        except (ValueError, LookupError) as error:
-            print(f"错误：{error}", file=sys.stderr)
-            return 1
+        run(args.kind, args.name)
     if args.cmd == "web":
         from .web import run
         run(args.port, open_browser=not args.no_open,

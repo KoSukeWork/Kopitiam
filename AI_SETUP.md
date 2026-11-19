@@ -31,7 +31,7 @@ kopitiam 只在 **Windows（PowerShell）** 上用过。不是 Windows 的话，
 uv --version
 git --version
 uv tool list | Select-String kopitiam
-Get-Command claude, codex, pi, dsh, agy -ErrorAction SilentlyContinue | Select-Object Name, Source
+Get-Command claude, codex, pi, dsh -ErrorAction SilentlyContinue | Select-Object Name, Source
 Test-Path "$HOME\.codex", "$HOME\.pi\agent", "$HOME\.dsh\profiles", "$env:APPDATA\com.yida.chatgpt.next.web"
 # kopitiam web 是不是已经开着
 Get-CimInstance Win32_Process -Filter "Name='kopitiam.exe'" | Where-Object { $_.CommandLine -match '\sweb(\s|$)' } | Select-Object ProcessId, CommandLine
@@ -49,7 +49,6 @@ Get-CimInstance Win32_Process -Filter "Name='kopitiam.exe'" | Where-Object { $_.
 | Codex | `~\.codex\config.toml` 里有 `[mcp_servers.kopitiam]` | `~\.codex\hooks.json` 里有 `codex-stop` |
 | pi | `~\.pi\agent\mcp.json` 里有 `"kopitiam"` | 有 `~\.pi\agent\extensions\kopitiam-wake.ts` |
 | dsh（每个 profile） | `cordis.patch.yml` 里有 `serverName: kopitiam` | 同一个文件里有 `id: kopitiam-wake` |
-| agy（Antigravity CLI） | 终端接入：`~\.gemini\config\mcp_config.json` 里有 `"kopitiam"`；网页托管会自动注入 | 不装 hook；网页托管能自动唤醒，终端不能 |
 | NextChat | `mcp_config.json` 里有 `"kopitiam"`。桌面版在 `%APPDATA%\com.yida.chatgpt.next.web\`；服务器版在 NextChat 目录的 `app\mcp\`；设了 `NEXTCHAT_MCP_CONFIG_DIR` 就在那个目录 | 不支持，不用装 |
 
 然后**一次问清楚**，问的时候先说现状，比如：「Claude Code、Codex 已经接好了，pi 还没接」：
@@ -95,7 +94,7 @@ Join-Path (uv tool dir --bin) kopitiam.exe
 ## 第 3 步：把 kopitiam 接进每个 agent（MCP）
 
 只做用户选了、还没接好的。配置里**不要加 `--name`**。不加的话：
-- Codex、dsh 和 agy（有根对话 ID 时）是一个对话（会话）一个身份；
+- Codex 和 dsh 是一个对话（会话）一个身份；
 - Claude Code 和 pi 按项目文件夹取名，比如 `claude@MyProject`。
 
 ### Claude Code
@@ -160,22 +159,6 @@ pi mcp add kopitiam --exposure direct -- "<KOPITIAM>" mcp --kind pi
 
 **检查**：运行 `dsh --profile <profile> --dump-config 2>&1 | Select-String 'not found|serverName'`。结果里有 `serverName: kopitiam`，并且没有 `not found`。
 
-### agy（Antigravity CLI）
-
-先区分用户要哪一种：**网页托管**可直接在 `kopitiam web` 左栏点「＋ agy 会话」，不需要改全局 MCP 配置；**自己开的终端**要接 MCP 才能手动收发消息，不能自动唤醒。两种可以同时用。
-
-终端接入：先按开头的规则备份 `~\.gemini\config\mcp_config.json`，确认没有同名条目，再运行：
-
-```powershell
-agy mcp add kopitiam "<KOPITIAM>" mcp --kind agy
-```
-
-**检查**：`agy mcp list` 能看到 `kopitiam`，配置里 command 和 args 与上面一致。保留名字 `kopitiam`：托管会话会覆盖同名全局 MCP；全局进程可能短暂启动，但不调用工具就不会创建终端身份。
-
-要托管：检查 `agy --version`，确认用户已经登录；未登录请用户在自己的终端运行 `agy` 登录。`agy` 不在 PATH 时，也可检查 `%LOCALAPPDATA%\agy\bin\agy.exe`。不要代替用户退出登录或改凭据。模型选项以已验证的 1.5.10 为基准。
-
-终端第一次调用 `whoami` 才分配身份，优先按根对话 ID 区分；名字取 MCP 启动目录。要打开网页托管中的对话，**先在网页点「交给终端」**；终端退出后再「接回来」。不要两边同时打开同一个对话。
-
 ### NextChat
 
 **不要自己改 `mcp_config.json`**：NextChat 添加 MCP 时会弹窗让用户确认要运行的命令，直接改文件会跳过这一步。把下面这段（`<KOPITIAM>` 换成真实路径，JSON 里的反斜杠要写两个）交给用户，请他在 NextChat 的 MCP 页面点「粘贴 JSON 添加」，粘贴进去，在弹窗里点「允许」：
@@ -200,7 +183,7 @@ agy mcp add kopitiam "<KOPITIAM>" mcp --kind agy
 
 ## 第 4 步：装自动唤醒
 
-用第 2 步的 `<KOPITIAM>` 运行，只装用户选了、还没装的。已经装过的再运行一次也安全：不会加出重复的条目，插件有新版本就换上。想先看会改什么，加 `--print`。NextChat 和 agy 跳过：NextChat、agy 终端不能自动唤醒；agy 网页托管由 `kopitiam web` 自己驱动，不装 hook，也没有 `setup agy` 命令。
+用第 2 步的 `<KOPITIAM>` 运行，只装用户选了、还没装的。已经装过的再运行一次也安全：不会加出重复的条目，插件有新版本就换上。想先看会改什么，加 `--print`。NextChat 没有自动唤醒，跳过。
 
 | agent | 命令 | 它会改什么（自己备份成） | 之后要做的 |
 |---|---|---|---|
@@ -279,7 +262,7 @@ kopitiam 的 MCP 自带使用说明，不加也会用。用户想加的话，把
 3. **重开以后怎么验证**：
    1. 在每个 agent 里说「调用 kopitiam 的 whoami」，它会回答「你是 claude@…」这样的名字。Codex、dsh 每个对话（会话）都要先这样用一次，才会出现在网页的成员列表里，也才叫得醒。
    2. 网页左栏能看到它们，显示在线。
-   3. 在网页上点一个 agent，给它发「收到请回复」：它应该几秒内自己醒过来回复，不用你去它的窗口里说话。NextChat、agy 终端叫不醒：发消息后，在它的对话里说「看一下聊天室」，它读到以后再回复。agy 托管请在「＋ agy 会话」填写已有目录和第一条任务；出现权限卡片时由用户确认。工作区模式只管 agy 来问的操作，读文件和系统临时目录写入可能由 agy 自行放行。
+   3. 在网页上点一个 agent，给它发「收到请回复」：它应该几秒内自己醒过来回复，不用你去它的窗口里说话。NextChat 叫不醒：发给 `nextchat` 以后，在它的对话里说「看一下聊天室」，它读到以后再回复。
    4. Codex 命令行第一次调用 kopitiam 时会问「Allow the kopitiam MCP server to run tool …?」，选「Always allow」。不然被叫醒时也会停在这里等人点。
 
 ## 常见问题

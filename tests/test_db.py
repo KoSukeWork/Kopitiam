@@ -315,3 +315,17 @@ def test_adopt_reconnects_recent_desktop_conversations(home):
         seen = c.execute("SELECT last_seen FROM agents WHERE id=?", (stale,)).fetchone()[0]
     assert online[desk] and not online[cli] and not online[stale]  # 很久没用的不接
     assert seen == "2020-01-01T00:00:00"
+
+
+def test_upgrade_drops_withdrawn_acp_sessions_table(home):
+    """撤回 agy 托管以后：旧库里的 acp_sessions 表要删掉，不然它的外键挡住永久删除那些身份。"""
+    db.init_db()
+    agent = db.claim("claude", cwd=str(home), name="old-agy", pid=os.getpid())
+    with db._conn() as c:
+        c.execute("CREATE TABLE acp_sessions(agent_id INTEGER PRIMARY KEY REFERENCES agents(id), backend TEXT)")
+        c.execute("INSERT INTO acp_sessions VALUES(?, 'agy')", (agent,))
+    db.init_db()
+    with db._conn() as c:
+        assert c.execute("SELECT 1 FROM sqlite_master WHERE name='acp_sessions'").fetchone() is None
+        c.execute("DELETE FROM agents WHERE id=?", (agent,))
+    assert db.get_meta("schema_version") == "12"  # 版本号不回退
