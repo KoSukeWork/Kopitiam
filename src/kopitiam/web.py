@@ -784,6 +784,7 @@ details.offline > summary:hover { color:var(--ink-2); }
 .wk { position:absolute; right:-4px; bottom:-3px; z-index:1; display:grid; place-items:center; width:15px; height:15px;
   border-radius:50%; background:var(--panel); box-shadow:0 0 0 1.5px var(--panel); color:var(--ok); }
 .wk svg { width:10px; height:10px; fill:currentColor; stroke-width:1.2; }
+.wk.bell svg { fill:none; stroke-width:2.4; }
 .wk.idle { color:var(--muted); }
 .wk.limit { color:#e5a00d; }
 .agent:hover .wk, .agent.active .wk { background:var(--hover); box-shadow:0 0 0 1.5px var(--hover); }
@@ -1215,6 +1216,7 @@ const ICONS = {
   clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
   palette: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.8-.8 1.8-1.8 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-1 .8-1.8 1.8-1.8H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11.5" r="1"/><circle cx="10" cy="7.5" r="1"/><circle cx="14.5" cy="7.5" r="1"/>',
   bolt: '<path d="M13 3L5 13.5h6L10 21l8-10.5h-6z"/>',
+  bell: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
 };
 const LOGO = '<path d="M6 13h17v6a7 7 0 0 1-7 7h-3a7 7 0 0 1-7-7z"/><path d="M23 15h1.5a3.5 3.5 0 0 1 0 7H22.4"/><path d="M11.5 9.5c0-1.6 1.6-1.6 1.6-3.2s-1.6-1.6-1.6-3.2"/><path d="M17 9.5c0-1.6 1.6-1.6 1.6-3.2S17 4.7 17 3.1"/>';
 
@@ -1871,9 +1873,12 @@ function renderWakeBtn() {
 function wakeBadge(name) {  // 侧栏名字后面的小闪电：这个 agent 收到点名消息会被叫醒
   const w = wakeInfo && wakeInfo.agents[name];
   if (!w || w.reason || !w.enabled) return null;
-  const b = icon("bolt", 13);
+  const b = icon(w.notify_only ? "bell" : "bolt", 13);
   b.classList.add("wk");
-  if (!wakeInfo.running || wakeInfo.paused) {
+  if (w.notify_only) {  // agy：不会被叫醒，只弹通知提醒你
+    b.classList.add("idle", "bell");
+    b.title = "收到点名消息只弹通知提醒你，不会自动唤醒" + (w.hint ? "\\n" + w.hint : "") + (w.note ? "\\n最近：" + w.note : "");
+  } else if (!wakeInfo.running || wakeInfo.paused) {
     b.classList.add("idle");
     b.title = wakeInfo.paused ? "自动唤醒已暂停" : "自动唤醒没有在运行";
   } else if (w.limited) {

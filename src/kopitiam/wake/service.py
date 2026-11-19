@@ -8,13 +8,13 @@ from typing import Callable
 
 from .. import db
 from ..config import WAKE_INTERVAL, WAKE_MAX_ROUNDS
-from . import claude, codex, detector, dsh, pi, signals
+from . import agy, claude, codex, detector, dsh, pi, signals
 from .detector import WakeCall
 
 # 每个适配器：check(agent) -> 叫不醒的原因或 None；wake(call) -> 结果说明或 None（= 已叫醒），失败抛异常；
 # 可选 hint(agent) -> 能叫醒但有限制时的说明（给网页显示）；可选 remind() -> 定时调用（Codex 用来弹通知）；
 # 可选 typed() -> 每轮感知之前，把接收端记下的「用户在 agent 窗口里打了字」交给感知模块（pi、dsh）
-ADAPTERS = {"claude": claude, "codex": codex, "dsh": dsh, "pi": pi}
+ADAPTERS = {"claude": claude, "codex": codex, "dsh": dsh, "pi": pi, "agy": agy}
 # 不打算做自动唤醒的 agent：网页上直接写明怎么让它读消息
 UNSUPPORTED = {"nextchat": "NextChat 不能自动唤醒：在它的对话里说「看一下聊天室」，它才会去读"}
 HEARTBEAT = 10  # 每隔几秒在库里记一次「自动唤醒在运行」，网页据此提示有没有在跑
@@ -72,6 +72,8 @@ def overview() -> dict:
             "kind": r["kind"], "enabled": s.get("enabled", True), "supported": supported,
             "reason": reason, "note": note, "limited": limited, "woken_at": s.get("woken_at"),
             "hint": hint(dict(r)) if hint and not reason else None,
+            # 只提醒用户、不叫醒 agent 的适配器（agy：Google 条款不允许别的程序驱动它）
+            "notify_only": bool(getattr(mod, "NOTIFY_ONLY", False)),
             # 要用户处理的情况：没装 hook、来回超过上限、叫醒失败（还没适配的 agent 不算）
             "warn": supported and bool(reason or limited or note.startswith("叫醒失败")),
         }

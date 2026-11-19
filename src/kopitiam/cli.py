@@ -6,7 +6,7 @@ import sys
 
 from .config import PEER_PORT, WEB_PORT
 
-KINDS = ["claude", "codex", "pi", "dsh", "nextchat", "agent"]
+KINDS = ["claude", "codex", "pi", "dsh", "nextchat", "agy", "agent"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
                                       "codex-start", "codex-busy", "codex-stop"])
 
     pe = sub.add_parser("export", help="调试用：导出某个 agent 的对话记录")
-    pe.add_argument("--agent", required=True, choices=["claude", "codex", "pi", "dsh"])
+    pe.add_argument("--agent", required=True, choices=["claude", "codex", "pi", "dsh", "agy"])
     pe.add_argument("--cwd", required=True)
     pe.add_argument("--mode", default="clean", choices=["clean", "full"])
     pe.add_argument("--session-file", default=None)

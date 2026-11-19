@@ -1513,7 +1513,13 @@ class Chat:
             except BaseException:
                 c.execute("ROLLBACK")
                 raise
-        if kind in ("codex", "dsh") and thread and not session_file:
+        if kind == "agy" and thread and not session_file:
+            # agy 的记录按对话 ID 找（brain/<ID>/.system_generated/logs/transcript.jsonl），记录里没有工作目录
+            from .export import agy as found_in
+            found = found_in.find_by_thread(thread)
+            if found:
+                session_file = str(found)
+        elif kind in ("codex", "dsh") and thread and not session_file:
             # 记下了正在用 kopitiam 的对话：直接用它的记录文件，不用按工作目录猜（也就不用先 set_cwd）
             if kind == "codex":
                 from .export import codex as found_in
